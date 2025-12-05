@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-mcp-agent
+  namespace: default
+  labels:
+    app: k8s-mcp-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-mcp-agent
+  template:
+    metadata:
+      labels:
+        app: k8s-mcp-agent
+    spec:
+      serviceAccountName: k8s-mcp-agent
+      containers:
+      - name: agent
+        image: k8s-mcp-agent:latest
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+

@@ -1,0 +1,59 @@
+# 注意：此文件仅供参考
+# 实际使用的是 dify 命名空间下的 k8s-mcp-server-sa ServiceAccount
+# 该 ServiceAccount 具有管理员权限（cluster-admin）
+
+# 如果需要在其他命名空间创建新的 ServiceAccount，可以使用以下配置：
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-mcp-agent
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8s-mcp-agent-role
+  namespace: default
+rules:
+  # Pod 相关权限
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]  # delete 用于重启 Pod
+  
+  # Service 相关权限
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+  
+  # Deployment 相关权限
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  
+  # 日志读取权限
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-mcp-agent-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: k8s-mcp-agent
+    namespace: default
+roleRef:
+  kind: Role
+  name: k8s-mcp-agent-role
+  apiGroup: rbac.authorization.k8s.io
+
+# ============================================
+# 当前使用的配置（dify 命名空间）:
+# ServiceAccount: k8s-mcp-server-sa
+# 命名空间: dify
+# 权限: cluster-admin (管理员权限)
+# ============================================
+

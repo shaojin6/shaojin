@@ -1,0 +1,46 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+k8s-mcp-agent
+k8s-mcp-web
+
+# Test binary
+*.test
+
+# Coverage
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config files with secrets
+configs.db
+sessions.db
+*.key
+*.crt
+.env
+.env.bak
+.config/
+*.log
+
+# Frontend (if added later)
+web-ui/node_modules/
+web-ui/dist/
+
