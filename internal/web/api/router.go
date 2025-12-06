@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"github.com/your-org/k8s-mcp-agent/internal/web/mcpclient"
 	"github.com/your-org/k8s-mcp-agent/internal/web/store"
 	"github.com/your-org/k8s-mcp-agent/internal/web/types"
+	"github.com/your-org/k8s-mcp-agent/internal/web/worker"
+	"github.com/your-org/k8s-mcp-agent/internal/web/worker/tasks"
 	"github.com/your-org/k8s-mcp-agent/pkg/mcp"
 )
 
@@ -233,6 +236,23 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 	toolManager = mcpclient.NewToolManager(mcpClient, cfgStore, toolsCache)
 	toolManagerMu.Unlock()
 
+	// 初始化 Worker 模块（用于异步任务处理）
+	// 从环境变量读取配置，默认 5 个工作线程，队列大小 100
+	workerCount := 5
+	if w := os.Getenv("WORKER_WORKERS"); w != "" {
+		if n, err := strconv.Atoi(w); err == nil && n > 0 {
+			workerCount = n
+		}
+	}
+	queueSize := 100
+	if q := os.Getenv("WORKER_QUEUE_SIZE"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			queueSize = n
+		}
+	}
+	worker.InitWorker(workerCount, queueSize)
+	log.Printf("[Router] Worker module initialized: %d workers, queue size %d", workerCount, queueSize)
+
 	// 初始化 MongoDB 会话存储
 	var sessionStore store.SessionStore
 	mongoURI := os.Getenv("MONGODB_URI")
@@ -284,10 +304,16 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 
 	// 初始化 Orchestrator（延迟初始化，需要 LLM 配置）
 
-	// 健康检查（最先注册）
-	r.GET("/healthz", func(c *gin.Context) {
-		c.JSON(http.StatusOK, types.StatusResponse{Status: "ok"})
-	})
+		// 健康检查（最先注册）
+		r.GET("/healthz", func(c *gin.Context) {
+			c.JSON(http.StatusOK, types.StatusResponse{Status: "ok"})
+		})
+
+		// Worker 状态监控（用于调试和监控）
+		r.GET("/api/worker/stats", func(c *gin.Context) {
+			stats := worker.GetStats()
+			c.JSON(http.StatusOK, stats)
+		})
 
 	// 认证相关（必须在 API 路由组之前）
 	authGroup := r.Group("/api/auth")
@@ -369,6 +395,24 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
 			}
+			
+			// 检查名称是否已存在
+			allK8s := cfgStore.GetAllK8sConfigs()
+			for _, existing := range allK8s {
+				if existing.Name == req.Name {
+					c.JSON(http.StatusConflict, gin.H{
+						"error": fmt.Sprintf("名称 \"%s\" 已存在", req.Name),
+					})
+					return
+				}
+				if existing.ID == req.ID && req.ID != "" {
+					c.JSON(http.StatusConflict, gin.H{
+						"error": fmt.Sprintf("ID \"%s\" 已存在", req.ID),
+					})
+					return
+				}
+			}
+			
 			cfgStore.SetK8sConfig(req)
 			c.Status(http.StatusNoContent)
 		})
@@ -413,6 +457,24 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
 			}
+			
+			// 检查名称或ID是否已存在
+			allLLM := cfgStore.GetAllLLMConfigs()
+			for _, existing := range allLLM {
+				if existing.Name == req.Name {
+					c.JSON(http.StatusConflict, gin.H{
+						"error": fmt.Sprintf("名称 \"%s\" 已存在", req.Name),
+					})
+					return
+				}
+				if existing.ID == req.ID && req.ID != "" {
+					c.JSON(http.StatusConflict, gin.H{
+						"error": fmt.Sprintf("ID \"%s\" 已存在", req.ID),
+					})
+					return
+				}
+			}
+			
 			cfgStore.SetLLMConfig(req)
 			// 重置 Orchestrator，以便使用新配置
 			ResetOrchestrator()
@@ -641,47 +703,107 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 
 			// 使用持久化存储（会自动保存到文件）
 			cfgStore.SetRemoteMCP(req)
-			// 刷新 ToolManager 以加载新的远程 MCP 工具
-			toolManagerMu.Lock()
-			if toolManager != nil {
-				toolManager.RefreshRemoteTools()
+			// 使用 Worker 异步刷新 ToolManager 以加载新的远程 MCP 工具（不阻塞 HTTP 响应）
+			task := tasks.NewToolRefreshTask(&toolManagerMu, toolManager, "")
+			if err := worker.EnqueueTask(task); err != nil {
+				log.Printf("[Router] Failed to enqueue tool refresh task: %v", err)
 			}
-			toolManagerMu.Unlock()
 			c.Status(http.StatusNoContent)
 		})
 
 		apiGroup.PUT("/config/remote-mcp/:identifier", func(c *gin.Context) {
 			identifier := c.Param("identifier")
+			// 检查配置是否存在
+			existing := cfgStore.GetRemoteMCP(identifier)
+			if existing == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "MCP service not found"})
+				return
+			}
+			
 			var req types.RemoteMCPConfig
 			if err := c.ShouldBindJSON(&req); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
 			}
-			// 确保使用正确的标识符
-			if req.ServerID == "" {
-				req.ServerID = identifier
+			
+			// 确保使用正确的 serverId（不允许修改 serverId）
+			// 使用 existing 的 serverId，而不是 identifier（identifier 可能是 name）
+			if existing.ServerID == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid MCP config: serverId is empty"})
+				return
 			}
-			// 使用持久化存储（会自动保存到文件）
+			req.ServerID = existing.ServerID
+			
+			// 如果名称被修改，检查新名称是否与其他配置冲突
+			if req.Name != existing.Name {
+				allMcps := cfgStore.GetAllRemoteMCPs()
+				for _, mcp := range allMcps {
+					// 使用 serverId 进行比较，而不是 identifier（identifier 可能是 name）
+					if mcp.ServerID != existing.ServerID && mcp.Name == req.Name {
+						c.JSON(http.StatusConflict, gin.H{
+							"error": fmt.Sprintf("名称 \"%s\" 已存在", req.Name),
+						})
+						return
+					}
+				}
+			}
+			
+			// 确保所有配置参数都从前端传入，不设置硬编码默认值
+			// 如果前端没有传入某些字段（为0或空），保留数据库中的现有值
+			// 这样确保前端设置的值会更新到数据库，未设置的字段保持原值
+			if req.Timeout == 0 {
+				req.Timeout = existing.Timeout
+			}
+			if req.SSEReadTimeout == 0 {
+				req.SSEReadTimeout = existing.SSEReadTimeout
+			}
+			if req.Icon == "" {
+				req.Icon = existing.Icon
+			}
+			if req.Type == "" {
+				req.Type = existing.Type
+			}
+			if req.BaseURL == "" {
+				req.BaseURL = existing.BaseURL
+			}
+			if req.ToolsEndpoint == "" && existing.ToolsEndpoint != "" {
+				req.ToolsEndpoint = existing.ToolsEndpoint
+			}
+			// Enabled 字段：如果前端明确设置为 false，使用 false；否则保持原值
+			// 注意：这里需要前端明确传递 enabled 字段
+			
+			// 使用持久化存储（只保存到 MySQL，会自动更新）
 			cfgStore.SetRemoteMCP(req)
-			// 刷新 ToolManager 以加载新的远程 MCP 工具
-			toolManagerMu.Lock()
-			if toolManager != nil {
-				toolManager.RefreshRemoteTools()
+			// 使用 Worker 异步刷新 ToolManager 以加载新的远程 MCP 工具（不阻塞 HTTP 响应）
+			// 这样可以避免工具发现过程（如 SSE 连接）阻塞保存操作
+			task := tasks.NewToolRefreshTask(&toolManagerMu, toolManager, req.ServerID)
+			if err := worker.EnqueueTask(task); err != nil {
+				log.Printf("[Router] Failed to enqueue tool refresh task: %v", err)
 			}
-			toolManagerMu.Unlock()
 			c.Status(http.StatusNoContent)
 		})
 
 		apiGroup.DELETE("/config/remote-mcp/:identifier", func(c *gin.Context) {
 			identifier := c.Param("identifier")
-			// 使用持久化存储（会自动保存到文件）
-			cfgStore.DeleteRemoteMCP(identifier)
-			// 刷新 ToolManager 以移除已删除的远程 MCP 工具
-			toolManagerMu.Lock()
-			if toolManager != nil {
-				toolManager.RefreshRemoteTools()
+			// 检查配置是否存在（优先按 serverId 查找）
+			existing := cfgStore.GetRemoteMCP(identifier)
+			if existing == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "MCP service not found"})
+				return
 			}
-			toolManagerMu.Unlock()
+			// 使用 serverId 删除（确保使用正确的标识符）
+			serverId := existing.ServerID
+			if serverId == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid MCP config: serverId is empty"})
+				return
+			}
+			// 使用持久化存储（只从 MySQL 删除）
+			cfgStore.DeleteRemoteMCP(serverId)
+			// 使用 Worker 异步刷新 ToolManager 以移除已删除的远程 MCP 工具（不阻塞 HTTP 响应）
+			task := tasks.NewToolRefreshTask(&toolManagerMu, toolManager, "")
+			if err := worker.EnqueueTask(task); err != nil {
+				log.Printf("[Router] Failed to enqueue tool refresh task: %v", err)
+			}
 			c.Status(http.StatusNoContent)
 		})
 

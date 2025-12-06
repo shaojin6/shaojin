@@ -83,6 +83,7 @@ type RemoteMCPConfig struct {
 	Icon            string            `json:"icon,omitempty"`          // 图标（可选）
 	Timeout         int               `json:"timeout"`                 // 超时时间（秒），默认30
 	SSEReadTimeout  int               `json:"sseReadTimeout"`          // SSE 读取超时时间（秒），默认300
+	FrontendTimeout int               `json:"frontendTimeout,omitempty"` // 前端工具列表加载超时时间（毫秒），0表示使用全局配置
 	Headers         map[string]string `json:"headers,omitempty"`       // HTTP 请求头
 	ToolsEndpoint   string            `json:"toolsEndpoint,omitempty"` // 工具端点（可选）
 	Enabled         bool              `json:"enabled"`

@@ -405,8 +405,10 @@ const loadRemoteMCPs = async () => {
         .filter(mcp => mcp.enabled) // 只加载启用的服务
         .map(mcp => {
           const identifier = mcp.serverId || mcp.name
+          // 计算超时时间：普通加载时使用超时时间（毫秒），默认 60 秒 = 60000 毫秒
+          const timeout = (mcp.timeout || 60) * 1000
           // 静默加载，不显示错误（因为可能还没有工具）
-          return getRemoteMCPTools(identifier, false)
+          return getRemoteMCPTools(identifier, false, timeout)
             .then(result => {
               if (result && result.tools && result.tools.length > 0) {
                 mcp.tools = result.tools
@@ -449,20 +451,21 @@ const handleAdd = () => {
 
 const handleEdit = (mcp) => {
   editingItem.value = mcp
-  Object.assign(form, {
+  // 使用深拷贝避免修改原始对象
+  Object.assign(form, JSON.parse(JSON.stringify({
     name: mcp.name || '',
     serverId: mcp.serverId || '',
     type: mcp.type || 'http',
     baseUrl: mcp.baseUrl || '',
     icon: mcp.icon || 'M',
     iconColor: mcp.iconColor || '#6366f1',
-    timeout: mcp.timeout || 30,
-    sseReadTimeout: mcp.sseReadTimeout || 300,
+    timeout: mcp.timeout || 0, // 从数据库读取，如果为0则前端表单会显示默认值
+    sseReadTimeout: mcp.sseReadTimeout || 0, // 从数据库读取，如果为0则前端表单会显示默认值
     headers: mcp.headers
       ? Object.entries(mcp.headers).map(([name, value]) => ({ name, value }))
       : [],
     toolsEndpoint: mcp.toolsEndpoint || ''
-  })
+  })))
   showDialog.value = true
 }
 
@@ -555,8 +558,8 @@ const saveRemoteMCP = async () => {
       baseUrl: form.baseUrl,
       icon: form.icon,
       iconColor: form.iconColor,
-      timeout: form.timeout || 30,
-      sseReadTimeout: form.sseReadTimeout || 300,
+      timeout: form.timeout || 0, // 从前端传入，如果为0则使用数据库中的值
+      sseReadTimeout: form.sseReadTimeout || 0, // 从前端传入，如果为0则使用数据库中的值
       headers: headersObj,
       toolsEndpoint: form.toolsEndpoint || '',
       enabled: true
@@ -712,7 +715,24 @@ const showTools = async (mcp) => {
 const loadTools = async (forceRefresh = false) => {
   loadingTools.value = true
   try {
-    const result = await getRemoteMCPTools(currentMCPId.value, forceRefresh)
+    // 获取当前 MCP 配置以获取超时时间
+    const currentMCP = remoteMCPs.value.find(mcp => 
+      (mcp.serverId || mcp.name) === currentMCPId.value
+    )
+    
+    // 计算超时时间：如果是刷新，使用 SSE 读取超时时间；否则使用普通超时时间
+    let timeout = null
+    if (currentMCP) {
+      if (forceRefresh) {
+        // 刷新时使用 SSE 读取超时时间（毫秒），默认 300 秒 = 300000 毫秒
+        timeout = (currentMCP.sseReadTimeout || 300) * 1000
+      } else {
+        // 普通加载时使用超时时间（毫秒），默认 60 秒 = 60000 毫秒
+        timeout = (currentMCP.timeout || 60) * 1000
+      }
+    }
+    
+    const result = await getRemoteMCPTools(currentMCPId.value, forceRefresh, timeout)
     toolsList.value = result.tools || []
     if (result.cached) {
       // 如果是缓存的数据，可以显示提示（可选）
@@ -740,6 +760,18 @@ const loadToolsForRow = async (row, force = false) => {
     return
   }
 
+  // 计算超时时间：如果是刷新，使用 SSE 读取超时时间；否则使用普通超时时间
+  let timeout = null
+  if (row) {
+    if (force) {
+      // 刷新时使用 SSE 读取超时时间（毫秒），默认 300 秒 = 300000 毫秒
+      timeout = (row.sseReadTimeout || 300) * 1000
+    } else {
+      // 普通加载时使用超时时间（毫秒），默认 60 秒 = 60000 毫秒
+      timeout = (row.timeout || 60) * 1000
+    }
+  }
+
   // 如果已有工具数量但工具列表为空，说明可能正在加载，先尝试从缓存加载
   if (
     !force &&
@@ -748,7 +780,7 @@ const loadToolsForRow = async (row, force = false) => {
     (!row.tools || row.tools.length === 0)
   ) {
     try {
-      const result = await getRemoteMCPTools(identifier, false)
+      const result = await getRemoteMCPTools(identifier, false, timeout)
       if (result && result.tools && result.tools.length > 0) {
         row.tools = result.tools
         row.toolsCount = result.tools.length
@@ -769,7 +801,7 @@ const loadToolsForRow = async (row, force = false) => {
   }
 
   try {
-    const result = await getRemoteMCPTools(identifier, force)
+    const result = await getRemoteMCPTools(identifier, force, timeout)
     row.tools = result.tools || []
     row.toolsCount = row.tools.length
   } catch (error) {

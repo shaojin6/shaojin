@@ -3,13 +3,17 @@ package main
 import (
 	"io"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/gin-gonic/gin"
 	"github.com/your-org/k8s-mcp-agent/internal/config"
 	"github.com/your-org/k8s-mcp-agent/internal/k8s"
 	"github.com/your-org/k8s-mcp-agent/internal/server"
 	"github.com/your-org/k8s-mcp-agent/internal/web/api"
+	"github.com/your-org/k8s-mcp-agent/internal/web/worker"
 	"github.com/your-org/k8s-mcp-agent/pkg/mcp"
 )
 
@@ -83,11 +87,38 @@ func main() {
 		addr = ":8080"
 	}
 
-	log.Printf("Starting MCP Web service on %s", addr)
-	log.Printf("Logs are being written to: service.log")
-	if err := router.Run(addr); err != nil {
-		log.Fatalf("Failed to start web service: %v", err)
+	// 设置优雅关闭
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// 在 goroutine 中启动服务器
+	server := &http.Server{
+		Addr:    addr,
+		Handler: router,
 	}
+
+	go func() {
+		log.Printf("Starting MCP Web service on %s", addr)
+		log.Printf("Logs are being written to: service.log")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start web service: %v", err)
+		}
+	}()
+
+	// 等待中断信号
+	<-sigChan
+	log.Printf("Shutting down server...")
+
+	// 停止 Worker 模块
+	log.Printf("Stopping worker module...")
+	worker.StopWorker()
+
+	// 关闭服务器
+	if err := server.Shutdown(nil); err != nil {
+		log.Printf("Error during server shutdown: %v", err)
+	}
+
+	log.Printf("Server stopped")
 }
 
 // setupLogging 设置日志输出到文件和控制台

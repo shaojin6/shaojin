@@ -296,7 +296,7 @@ const handleAgentChange = () => {
 const createNewSession = (showMessage = true) => {
   if (!selectedAgentId.value) {
     if (showMessage) {
-      ElMessage.warning('请先选择一个智能体')
+    ElMessage.warning('请先选择一个智能体')
     }
     return
   }
@@ -308,7 +308,7 @@ const createNewSession = (showMessage = true) => {
   loadSessions()
   // 只有用户主动点击"+"按钮时才显示提示
   if (showMessage) {
-    ElMessage.success('已创建新对话')
+  ElMessage.success('已创建新对话')
   }
 }
 

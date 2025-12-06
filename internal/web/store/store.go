@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -191,26 +192,55 @@ func (s *Store) SetRemoteMCP(config types.RemoteMCPConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	config.LastUpdate = time.Now().Unix()
-	// 使用 serverId 作为 key，如果没有则使用 name
-	key := config.ServerID
-	if key == "" {
-		key = config.Name
+	// 严格使用 serverId 作为 key，不允许使用 name 作为 fallback
+	// 如果 serverId 为空，这是一个错误，不应该保存
+	if config.ServerID == "" {
+		log.Printf("[Store] ERROR: Cannot save MCP config with empty ServerID (name: %s)", config.Name)
+		return
 	}
-	s.remoteMCPs[key] = &config
+	s.remoteMCPs[config.ServerID] = &config
 }
 
 // GetRemoteMCP 获取指定远程 MCP 配置
+// identifier 可以是 serverId 或 name，但优先使用 serverId
 func (s *Store) GetRemoteMCP(identifier string) *types.RemoteMCPConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.remoteMCPs[identifier]
+
+	// 优先使用 serverId 查找（最常见的情况）
+	if config, ok := s.remoteMCPs[identifier]; ok {
+		return config
+	}
+
+	// 如果按 serverId 找不到，尝试按 name 查找（向后兼容）
+	for _, config := range s.remoteMCPs {
+		if config != nil && config.Name == identifier {
+			return config
+		}
+	}
+
+	return nil
 }
 
 // DeleteRemoteMCP 删除远程 MCP 配置
+// identifier 可以是 serverId 或 name，但优先使用 serverId
 func (s *Store) DeleteRemoteMCP(identifier string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.remoteMCPs, identifier)
+
+	// 优先使用 serverId 删除（最常见的情况）
+	if _, ok := s.remoteMCPs[identifier]; ok {
+		delete(s.remoteMCPs, identifier)
+		return
+	}
+
+	// 如果按 serverId 找不到，尝试按 name 查找并删除（向后兼容）
+	for key, config := range s.remoteMCPs {
+		if config != nil && config.Name == identifier {
+			delete(s.remoteMCPs, key)
+			return
+		}
+	}
 }
 
 // GetAllAgents 获取所有 Agent 配置
