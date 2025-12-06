@@ -32,10 +32,10 @@
                 size="small"
                 text
                 :loading="scope.row.refreshingTools"
-                @click="refreshToolsForRow(scope.row)"
+                @click="refreshToolsFromCache(scope.row)"
               >
                 <el-icon><Refresh /></el-icon>
-                刷新
+                本地刷新
               </el-button>
             </div>
             <div v-if="scope.row.loadingTools" class="tools-expand-body">
@@ -318,7 +318,7 @@
               style="margin-left: 10px"
             >
               <el-icon><Refresh /></el-icon>
-              刷新
+              Remote MCP刷新
             </el-button>
           </div>
           <div class="tools-list">
@@ -746,7 +746,7 @@ const loadTools = async (forceRefresh = false) => {
   }
 }
 
-// 刷新工具列表（强制从远程获取）
+// Remote MCP刷新：强制从远程MCP服务获取工具列表（会更新Redis缓存）
 const refreshTools = () => {
   loadTools(true)
 }
@@ -820,8 +820,40 @@ const loadToolsForRow = async (row, force = false) => {
   }
 }
 
+// 从远程MCP服务强制刷新工具列表（会更新Redis缓存）
 const refreshToolsForRow = (row) => {
   loadToolsForRow(row, true)
+}
+
+// 从本地Redis缓存刷新工具列表（不调用远程服务）
+const refreshToolsFromCache = async (row) => {
+  if (!row) return
+  const identifier = row.serverId || row.name
+  
+  // 计算超时时间：从缓存加载使用普通超时时间
+  const timeout = (row.timeout || 60) * 1000
+  
+  row.refreshingTools = true
+  try {
+    // 从缓存加载，不强制刷新（force=false）
+    const result = await getRemoteMCPTools(identifier, false, timeout)
+    if (result && result.tools && result.tools.length > 0) {
+      row.tools = result.tools
+      row.toolsCount = result.tools.length
+    } else {
+      row.tools = []
+      row.toolsCount = 0
+      ElMessage.info('缓存中暂无工具列表，请使用 Remote MCP刷新 从远程获取')
+    }
+  } catch (error) {
+    ElMessage.error('从缓存加载工具列表失败: ' + (error.response?.data?.error || error.message))
+    if (!row.tools || row.tools.length === 0) {
+      row.tools = []
+      row.toolsCount = 0
+    }
+  } finally {
+    row.refreshingTools = false
+  }
 }
 
 const handleExpandChange = (row) => {
