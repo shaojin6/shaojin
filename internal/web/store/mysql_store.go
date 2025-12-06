@@ -404,7 +404,11 @@ func (m *MySQLStore) UpdateRemoteMCPConfig(ctx context.Context, config types.Rem
 		frontendTimeout = sql.NullInt64{Int64: int64(config.FrontendTimeout), Valid: true}
 	}
 
-	// 使用 UPDATE
+	// 使用 UPDATE（关键：WHERE server_id = ? 确保只更新指定的服务）
+	// 添加详细日志以便调试和验证
+	log.Printf("[MySQLStore] Updating Remote MCP config: ServerID=%s, Name=%s, BaseURL=%s, Headers count=%d",
+		config.ServerID, config.Name, config.BaseURL, len(config.Headers))
+	
 	result, err := m.db.ExecContext(queryCtx, `
 		UPDATE remote_mcp_configs SET
 			name = ?,
@@ -440,8 +444,15 @@ func (m *MySQLStore) UpdateRemoteMCPConfig(ctx context.Context, config types.Rem
 		return fmt.Errorf("remote mcp config with server_id '%s' not found", config.ServerID)
 	}
 
-	log.Printf("[MySQLStore] Remote MCP config updated: ServerID=%s, Name=%s, Headers count=%d",
-		config.ServerID, config.Name, len(config.Headers))
+	// 验证：确保只更新了一条记录（防止意外更新多条）
+	if rowsAffected > 1 {
+		log.Printf("[MySQLStore] WARNING: Updated %d rows for server_id '%s', expected 1! This may indicate a data integrity issue.",
+			rowsAffected, config.ServerID)
+		// 不返回错误，因为更新已经完成，但记录警告
+	}
+
+	log.Printf("[MySQLStore] Remote MCP config updated successfully: ServerID=%s, Name=%s, BaseURL=%s, Headers count=%d, RowsAffected=%d",
+		config.ServerID, config.Name, config.BaseURL, len(config.Headers), rowsAffected)
 
 	return nil
 }

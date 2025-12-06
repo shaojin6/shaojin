@@ -713,7 +713,7 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 
 		apiGroup.PUT("/config/remote-mcp/:identifier", func(c *gin.Context) {
 			identifier := c.Param("identifier")
-			// 检查配置是否存在
+			// 检查配置是否存在（严格按 serverId 查找）
 			existing := cfgStore.GetRemoteMCP(identifier)
 			if existing == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "MCP service not found"})
@@ -785,7 +785,7 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 
 		apiGroup.DELETE("/config/remote-mcp/:identifier", func(c *gin.Context) {
 			identifier := c.Param("identifier")
-			// 检查配置是否存在（优先按 serverId 查找）
+			// 检查配置是否存在（严格按 serverId 查找）
 			existing := cfgStore.GetRemoteMCP(identifier)
 			if existing == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "MCP service not found"})
@@ -898,6 +898,7 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 			identifier := c.Param("identifier")
 			forceRefresh := c.Query("refresh") == "true" // 支持 ?refresh=true 强制刷新
 
+			// 严格按 serverId 查找，避免 fallback 导致的数据错误
 			mcpConfig := cfgStore.GetRemoteMCP(identifier)
 			if mcpConfig == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "Remote MCP not found"})
@@ -978,6 +979,7 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 
 		apiGroup.POST("/config/remote-mcp/:identifier/test", func(c *gin.Context) {
 			identifier := c.Param("identifier")
+			// 严格按 serverId 查找，避免 fallback 导致的数据错误
 			mcpConfig := cfgStore.GetRemoteMCP(identifier)
 			if mcpConfig == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "Remote MCP not found"})
@@ -1067,6 +1069,7 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "name and mcpServerId are required"})
 				return
 			}
+			// 严格按 serverId 查找，req.MCPServerID 必须是 serverId
 			if cfgStore.GetRemoteMCP(req.MCPServerID) == nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "MCP server not found"})
 				return
@@ -1108,6 +1111,7 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "name and mcpServerId are required"})
 				return
 			}
+			// 严格按 serverId 查找，req.MCPServerID 必须是 serverId
 			if cfgStore.GetRemoteMCP(req.MCPServerID) == nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "MCP server not found"})
 				return
@@ -1191,7 +1195,7 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 			log.Printf("[Chat API] Using configured default LLM: %s (ID: %s, Provider: %s, Model: %s, BaseURL: %s)",
 				llmConfig.Name, llmConfig.ID, llmConfig.Provider, llmConfig.Model, llmConfig.BaseURL)
 
-			// 验证 MCP 服务配置
+			// 验证 MCP 服务配置（严格按 serverId 查找）
 			mcpConfig := cfgStore.GetRemoteMCP(agent.MCPServerID)
 			if mcpConfig == nil {
 				log.Printf("[Chat API] ERROR: MCP server %s not found for agent %s", agent.MCPServerID, agent.Name)

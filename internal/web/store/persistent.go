@@ -562,9 +562,14 @@ func (ps *PersistentStore) createDefaultMCPConfig(serverId string) *types.Remote
 	}
 }
 
-// GetRemoteMCP 获取指定远程 MCP 配置
+// GetRemoteMCP 获取指定远程 MCP 配置（支持 fallback 到 name 查找，用于 API 路由）
 func (ps *PersistentStore) GetRemoteMCP(identifier string) *types.RemoteMCPConfig {
 	return ps.store.GetRemoteMCP(identifier)
+}
+
+// GetRemoteMCPByServerID 严格按 serverId 获取远程 MCP 配置（无 fallback，用于工具缓存等场景）
+func (ps *PersistentStore) GetRemoteMCPByServerID(serverID string) *types.RemoteMCPConfig {
+	return ps.store.GetRemoteMCPByServerID(serverID)
 }
 
 // SetRemoteMCP 设置远程 MCP 配置（持久化，只保存到 MySQL）

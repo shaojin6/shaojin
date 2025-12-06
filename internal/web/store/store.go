@@ -201,22 +201,28 @@ func (s *Store) SetRemoteMCP(config types.RemoteMCPConfig) {
 	s.remoteMCPs[config.ServerID] = &config
 }
 
-// GetRemoteMCP 获取指定远程 MCP 配置
-// identifier 可以是 serverId 或 name，但优先使用 serverId
+// GetRemoteMCP 获取指定远程 MCP 配置（严格按 serverId 查找，无 fallback）
+// identifier 必须是 serverId，不再支持按 name 查找，避免 name 冲突导致的数据错误
+// 此方法已移除 fallback 逻辑，统一使用 serverId 作为唯一标识符
 func (s *Store) GetRemoteMCP(identifier string) *types.RemoteMCPConfig {
+	// 直接调用 GetRemoteMCPByServerID，保持一致性
+	return s.GetRemoteMCPByServerID(identifier)
+}
+
+// GetRemoteMCPByServerID 严格按 serverId 获取远程 MCP 配置（无 fallback）
+// 用于工具缓存等需要严格数据隔离的场景
+// 如果 serverId 不存在，返回 nil（不会 fallback 到 name 查找）
+func (s *Store) GetRemoteMCPByServerID(serverID string) *types.RemoteMCPConfig {
+	if serverID == "" {
+		return nil
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// 优先使用 serverId 查找（最常见的情况）
-	if config, ok := s.remoteMCPs[identifier]; ok {
+	// 严格按 serverId 查找，不使用 fallback
+	if config, ok := s.remoteMCPs[serverID]; ok {
 		return config
-	}
-
-	// 如果按 serverId 找不到，尝试按 name 查找（向后兼容）
-	for _, config := range s.remoteMCPs {
-		if config != nil && config.Name == identifier {
-			return config
-		}
 	}
 
 	return nil

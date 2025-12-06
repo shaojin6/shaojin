@@ -404,11 +404,15 @@ const loadRemoteMCPs = async () => {
       const loadPromises = remoteMCPs.value
         .filter(mcp => mcp.enabled) // 只加载启用的服务
         .map(mcp => {
-          const identifier = mcp.serverId || mcp.name
+          // 严格使用 serverId，不再使用 name 作为 fallback
+          if (!mcp.serverId) {
+            console.error('配置错误：缺少 serverId', mcp)
+            return Promise.resolve({ tools: [], count: 0 })
+          }
           // 计算超时时间：普通加载时使用超时时间（毫秒），默认 60 秒 = 60000 毫秒
           const timeout = (mcp.timeout || 60) * 1000
           // 静默加载，不显示错误（因为可能还没有工具）
-          return getRemoteMCPTools(identifier, false, timeout)
+          return getRemoteMCPTools(mcp.serverId, false, timeout)
             .then(result => {
               if (result && result.tools && result.tools.length > 0) {
                 mcp.tools = result.tools
@@ -599,8 +603,12 @@ const handleDelete = async (mcp) => {
         type: 'warning'
       }
     )
-    const identifier = mcp.serverId || mcp.name
-    await deleteRemoteMCPAPI(identifier)
+    // 严格使用 serverId，不再使用 name 作为 fallback
+    if (!mcp.serverId) {
+      ElMessage.error('配置错误：缺少 serverId')
+      return
+    }
+    await deleteRemoteMCPAPI(mcp.serverId)
     const serviceName = mcp.name || mcp.serverId || '未命名服务'
     ElMessage.success(`${serviceName} 删除成功`)
     await loadRemoteMCPs()
@@ -614,7 +622,12 @@ const handleDelete = async (mcp) => {
 
 const toggleRemoteMCP = async (mcp) => {
   try {
-    await updateRemoteMCP(mcp.serverId || mcp.name, { ...mcp, enabled: mcp.enabled })
+    // 严格使用 serverId，不再使用 name 作为 fallback
+    if (!mcp.serverId) {
+      ElMessage.error('配置错误：缺少 serverId')
+      return
+    }
+    await updateRemoteMCP(mcp.serverId, { ...mcp, enabled: mcp.enabled })
     const serviceName = mcp.name || mcp.serverId || '未命名服务'
     ElMessage.success(mcp.enabled ? `${serviceName} 已启用` : `${serviceName} 已禁用`)
     emit('config-updated')
@@ -674,8 +687,12 @@ const testEndpointPath = async () => {
 
 const testRemoteMCP = async (mcp) => {
   try {
-    const identifier = mcp.serverId || mcp.name
-    const result = await testRemoteMCPAPI(identifier)
+    // 严格使用 serverId，不再使用 name 作为 fallback
+    if (!mcp.serverId) {
+      ElMessage.error('配置错误：缺少 serverId')
+      return
+    }
+    const result = await testRemoteMCPAPI(mcp.serverId)
     if (result.status === 'ok') {
       // 更新工具数量
       mcp.toolsCount = result.count || 0
@@ -705,8 +722,13 @@ const showTools = async (mcp) => {
     return
   }
   
+  // 严格使用 serverId，不再使用 name 作为 fallback
+  if (!mcp.serverId) {
+    ElMessage.error('配置错误：缺少 serverId')
+    return
+  }
   currentMCPName.value = mcp.name || mcp.serverId
-  currentMCPId.value = mcp.serverId || mcp.name
+  currentMCPId.value = mcp.serverId
   showToolsDialog.value = true
   await loadTools()
 }
@@ -715,10 +737,8 @@ const showTools = async (mcp) => {
 const loadTools = async (forceRefresh = false) => {
   loadingTools.value = true
   try {
-    // 获取当前 MCP 配置以获取超时时间
-    const currentMCP = remoteMCPs.value.find(mcp => 
-      (mcp.serverId || mcp.name) === currentMCPId.value
-    )
+    // 获取当前 MCP 配置以获取超时时间（严格按 serverId 查找）
+    const currentMCP = remoteMCPs.value.find(mcp => mcp.serverId === currentMCPId.value)
     
     // 计算超时时间：如果是刷新，使用 SSE 读取超时时间；否则使用普通超时时间
     let timeout = null
@@ -753,7 +773,12 @@ const refreshTools = () => {
 
 const loadToolsForRow = async (row, force = false) => {
   if (!row) return
-  const identifier = row.serverId || row.name
+  // 严格使用 serverId，不再使用 name 作为 fallback
+  if (!row.serverId) {
+    console.error('配置错误：缺少 serverId', row)
+    return
+  }
+  const identifier = row.serverId
 
   // 如果已加载且不是强制刷新，直接返回
   if (!force && row.tools && row.tools.length > 0) {
@@ -828,7 +853,12 @@ const refreshToolsForRow = (row) => {
 // 从本地Redis缓存刷新工具列表（不调用远程服务）
 const refreshToolsFromCache = async (row) => {
   if (!row) return
-  const identifier = row.serverId || row.name
+  // 严格使用 serverId，不再使用 name 作为 fallback
+  if (!row.serverId) {
+    console.error('配置错误：缺少 serverId', row)
+    return
+  }
+  const identifier = row.serverId
   
   // 计算超时时间：从缓存加载使用普通超时时间
   const timeout = (row.timeout || 60) * 1000

@@ -23,8 +23,10 @@ func NewDBCache(store *store.PersistentStore) *DBCache {
 }
 
 // GetTools 从数据库获取工具列表
+// identifier 应该是 serverId，使用严格查找避免 fallback 导致的数据串改
 func (d *DBCache) GetTools(ctx context.Context, identifier string) ([]mcp.Tool, error) {
-	mcpConfig := d.store.GetRemoteMCP(identifier)
+	// 使用严格按 serverId 查找，避免 fallback 到 name 导致的数据串改
+	mcpConfig := d.store.GetRemoteMCPByServerID(identifier)
 	if mcpConfig == nil {
 		return nil, nil // 配置不存在
 	}
@@ -66,8 +68,10 @@ func (d *DBCache) GetTools(ctx context.Context, identifier string) ([]mcp.Tool, 
 }
 
 // SetTools 将工具列表写入数据库
+// identifier 应该是 serverId，使用严格查找避免 fallback 导致的数据串改
 func (d *DBCache) SetTools(ctx context.Context, identifier string, tools []mcp.Tool, ttl time.Duration) error {
-	mcpConfig := d.store.GetRemoteMCP(identifier)
+	// 使用严格按 serverId 查找，避免 fallback 到 name 导致的数据串改
+	mcpConfig := d.store.GetRemoteMCPByServerID(identifier)
 	if mcpConfig == nil {
 		return fmt.Errorf("MCP config not found: %s", identifier)
 	}
@@ -106,8 +110,10 @@ func (d *DBCache) SetTools(ctx context.Context, identifier string, tools []mcp.T
 }
 
 // DeleteTools 删除工具列表缓存
+// identifier 应该是 serverId，使用严格查找避免 fallback 导致的数据串改
 func (d *DBCache) DeleteTools(ctx context.Context, identifier string) error {
-	mcpConfig := d.store.GetRemoteMCP(identifier)
+	// 使用严格按 serverId 查找，避免 fallback 到 name 导致的数据串改
+	mcpConfig := d.store.GetRemoteMCPByServerID(identifier)
 	if mcpConfig == nil {
 		return nil // 配置不存在，无需删除
 	}
