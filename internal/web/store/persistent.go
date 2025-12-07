@@ -39,8 +39,8 @@ func NewPersistentStore() *PersistentStore {
 		mysqlStore: nil, // 稍后通过 SetMySQLStore 设置
 	}
 
-	// 加载已保存的配置
-	ps.loadFromFile()
+	// 不再从文件加载配置，统一使用 MySQL 存储
+	// ps.loadFromFile()  // 已禁用：所有配置统一从 MySQL 加载
 
 	return ps
 }
@@ -106,9 +106,61 @@ func (ps *PersistentStore) SetMySQLStore(mysqlStore *MySQLStore) {
 				ps.store.SetAgent(agent)
 			}
 		}
+
+		// 3. 加载所有 K8s 配置
+		k8sConfigs, err := mysqlStore.GetAllK8sConfigs(ctx)
+		if err != nil {
+			log.Printf("[PersistentStore] WARNING: Failed to load K8s configs from MySQL: %v", err)
+		} else {
+			log.Printf("[PersistentStore] Loaded %d K8s configs from MySQL", len(k8sConfigs))
+			// 清除内存中不在 MySQL 中的配置
+			existingK8s := ps.store.GetAllK8sConfigs()
+			mysqlK8sIds := make(map[string]bool)
+			for _, k8s := range k8sConfigs {
+				mysqlK8sIds[k8s.ID] = true
+			}
+			for _, k8s := range existingK8s {
+				if !mysqlK8sIds[k8s.ID] {
+					log.Printf("[PersistentStore] Removing K8s config '%s' from memory (not in MySQL, was loaded from file)", k8s.ID)
+					ps.store.DeleteK8sConfig(k8s.ID)
+				}
+			}
+			// 加载 MySQL 中的配置（覆盖文件数据）
+			for _, k8s := range k8sConfigs {
+				ps.store.SetK8sConfig(k8s)
+				log.Printf("[PersistentStore] Loaded K8s config from MySQL: ID=%s, Name=%s, Mode=%s", k8s.ID, k8s.Name, k8s.Mode)
+			}
+		}
+
+		// 4. 加载所有 LLM 配置
+		llmConfigs, err := mysqlStore.GetAllLLMConfigs(ctx)
+		if err != nil {
+			log.Printf("[PersistentStore] WARNING: Failed to load LLM configs from MySQL: %v", err)
+		} else {
+			log.Printf("[PersistentStore] Loaded %d LLM configs from MySQL", len(llmConfigs))
+			// 清除内存中不在 MySQL 中的配置
+			existingLLM := ps.store.GetAllLLMConfigs()
+			mysqlLLMIds := make(map[string]bool)
+			for _, llm := range llmConfigs {
+				mysqlLLMIds[llm.ID] = true
+			}
+			for _, llm := range existingLLM {
+				if !mysqlLLMIds[llm.ID] {
+					log.Printf("[PersistentStore] Removing LLM config '%s' from memory (not in MySQL, was loaded from file)", llm.ID)
+					ps.store.DeleteLLMConfig(llm.ID)
+				}
+			}
+			// 加载 MySQL 中的配置（覆盖文件数据）
+			for _, llm := range llmConfigs {
+				ps.store.SetLLMConfig(llm)
+				log.Printf("[PersistentStore] Loaded LLM config from MySQL: ID=%s, Name=%s, Provider=%s, IsDefault=%v", 
+					llm.ID, llm.Name, llm.Provider, llm.IsDefault)
+			}
+		}
+
 		ps.mu.Unlock()
 		
-		// 3. 在锁外恢复缺失的 MCP 服务（如果 Agent 引用了但不存在）
+		// 5. 在锁外恢复缺失的 MCP 服务（如果 Agent 引用了但不存在）
 		if len(agents) > 0 {
 			ps.restoreMissingMCPServicesFromAgents(ctx, mysqlStore)
 		}
@@ -293,11 +345,10 @@ func (ps *PersistentStore) SetK8sConfig(config types.K8sConfig) {
 	ps.store.SetK8sConfig(config)
 	
 	// 只保存到 MySQL（不保存到文件）
-	// TODO: 实现 MySQL SetK8sConfig 方法
 	if ps.mysqlStore != nil {
-		// if err := ps.mysqlStore.SetK8sConfig(context.Background(), config); err != nil {
-		// 	log.Printf("[PersistentStore] ERROR: Failed to save K8s config '%s' to MySQL: %v", config.ID, err)
-		// }
+		if err := ps.mysqlStore.SetK8sConfig(context.Background(), config); err != nil {
+			log.Printf("[PersistentStore] ERROR: Failed to save K8s config '%s' to MySQL: %v", config.ID, err)
+		}
 	}
 }
 
@@ -306,11 +357,10 @@ func (ps *PersistentStore) DeleteK8sConfig(id string) {
 	ps.store.DeleteK8sConfig(id)
 	
 	// 只从 MySQL 删除（不操作文件）
-	// TODO: 实现 MySQL DeleteK8sConfig 方法
 	if ps.mysqlStore != nil {
-		// if err := ps.mysqlStore.DeleteK8sConfig(context.Background(), id); err != nil {
-		// 	log.Printf("[PersistentStore] ERROR: Failed to delete K8s config '%s' from MySQL: %v", id, err)
-		// }
+		if err := ps.mysqlStore.DeleteK8sConfig(context.Background(), id); err != nil {
+			log.Printf("[PersistentStore] ERROR: Failed to delete K8s config '%s' from MySQL: %v", id, err)
+		}
 	}
 }
 
@@ -336,9 +386,9 @@ func (ps *PersistentStore) SetLLMConfig(config types.LLMConfig) {
 	// 只保存到 MySQL（不保存到文件）
 	// TODO: 实现 MySQL SetLLMConfig 方法
 	if ps.mysqlStore != nil {
-		// if err := ps.mysqlStore.SetLLMConfig(context.Background(), config); err != nil {
-		// 	log.Printf("[PersistentStore] ERROR: Failed to save LLM config '%s' to MySQL: %v", config.ID, err)
-		// }
+		if err := ps.mysqlStore.SetLLMConfig(context.Background(), config); err != nil {
+			log.Printf("[PersistentStore] ERROR: Failed to save LLM config '%s' to MySQL: %v", config.ID, err)
+		}
 	}
 }
 
@@ -347,11 +397,10 @@ func (ps *PersistentStore) DeleteLLMConfig(id string) {
 	ps.store.DeleteLLMConfig(id)
 	
 	// 只从 MySQL 删除（不操作文件）
-	// TODO: 实现 MySQL DeleteLLMConfig 方法
 	if ps.mysqlStore != nil {
-		// if err := ps.mysqlStore.DeleteLLMConfig(context.Background(), id); err != nil {
-		// 	log.Printf("[PersistentStore] ERROR: Failed to delete LLM config '%s' from MySQL: %v", id, err)
-		// }
+		if err := ps.mysqlStore.DeleteLLMConfig(context.Background(), id); err != nil {
+			log.Printf("[PersistentStore] ERROR: Failed to delete LLM config '%s' from MySQL: %v", id, err)
+		}
 	}
 }
 
@@ -436,12 +485,10 @@ func (ps *PersistentStore) restoreMissingMCPServicesFromAgents(ctx context.Conte
 			}
 		}
 		
-		// 优先级2：从文件备份恢复（仅在 MySQL 查询出错时尝试，而不是记录不存在时）
-		// 注意：如果 MySQL 中明确不存在（nil），说明已被删除，不应该恢复
+		// 优先级2：从文件备份恢复（已禁用，统一使用 MySQL 存储）
+		// 不再从文件恢复，所有配置统一从 MySQL 加载
 		if restoredConfig == nil {
-			// 只有在 MySQL 查询出错（而不是记录不存在）时，才尝试从文件恢复
-			// 但这里 restoredConfig 已经是 nil，说明 MySQL 中不存在，不应该恢复
-			log.Printf("[PersistentStore] Skipping file backup restore for '%s' (explicitly deleted from MySQL)", serverId)
+			log.Printf("[PersistentStore] Skipping file backup restore for '%s' (file restore disabled, using MySQL only)", serverId)
 		}
 		
 		// 优先级3：创建默认配置（仅在 MySQL 查询出错时，而不是记录不存在时）
@@ -464,10 +511,10 @@ func (ps *PersistentStore) restoreMissingMCPServicesFromAgents(ctx context.Conte
 	}
 	ps.mu.Unlock()
 	
-	// 在锁外保存到文件，避免死锁
+	// 在锁外保存到 MySQL，避免死锁
 	for _, config := range configsToRestore {
 		ps.SetRemoteMCP(*config)
-		log.Printf("[PersistentStore] Successfully saved restored MCP service '%s' to file", config.ServerID)
+		log.Printf("[PersistentStore] Successfully saved restored MCP service '%s' to MySQL", config.ServerID)
 	}
 }
 
@@ -738,7 +785,7 @@ func (ps *PersistentStore) DeleteAgent(id string) {
 	
 	// 从内存存储删除
 	ps.store.DeleteAgent(id)
-	ps.saveToFile()
+	// 不再保存到文件，统一使用 MySQL 存储
 }
 
 func (ps *PersistentStore) GetDefaultAgent() *types.AgentConfig {

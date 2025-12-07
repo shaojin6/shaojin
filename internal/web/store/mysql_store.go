@@ -109,6 +109,58 @@ CREATE TABLE IF NOT EXISTS agents (
 
 	log.Printf("[MySQLStore] Agents table ensured")
 
+	// 创建 k8s_configs 表
+	k8sDDL := `
+CREATE TABLE IF NOT EXISTS k8s_configs (
+    id VARCHAR(255) NOT NULL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    mode VARCHAR(50) NOT NULL,
+    content TEXT,
+    namespace VARCHAR(255),
+    server VARCHAR(500),
+    token TEXT,
+    username VARCHAR(255),
+    password VARCHAR(255),
+    insecure BOOLEAN DEFAULT FALSE,
+    ca_file VARCHAR(500),
+    ca_data TEXT,
+    enabled BOOLEAN DEFAULT TRUE,
+    last_update BIGINT NOT NULL,
+    INDEX idx_enabled (enabled),
+    INDEX idx_name (name),
+    INDEX idx_mode (mode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+
+	if _, err := m.db.ExecContext(ctx, k8sDDL); err != nil {
+		return fmt.Errorf("failed to create k8s_configs table: %w", err)
+	}
+
+	log.Printf("[MySQLStore] K8s configs table ensured")
+
+	// 创建 llm_configs 表
+	llmDDL := `
+CREATE TABLE IF NOT EXISTS llm_configs (
+    id VARCHAR(255) NOT NULL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    provider VARCHAR(50) NOT NULL,
+    base_url VARCHAR(500),
+    model VARCHAR(255) NOT NULL,
+    api_key TEXT,
+    enabled BOOLEAN DEFAULT TRUE,
+    is_default BOOLEAN DEFAULT FALSE,
+    last_update BIGINT NOT NULL,
+    INDEX idx_enabled (enabled),
+    INDEX idx_name (name),
+    INDEX idx_provider (provider),
+    INDEX idx_is_default (is_default)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+
+	if _, err := m.db.ExecContext(ctx, llmDDL); err != nil {
+		return fmt.Errorf("failed to create llm_configs table: %w", err)
+	}
+
+	log.Printf("[MySQLStore] LLM configs table ensured")
+
 	return nil
 }
 
@@ -776,6 +828,584 @@ func (m *MySQLStore) MigrateFromFileStore(fileStore *PersistentStore) error {
 	}
 
 	log.Printf("[MySQLStore] Migration completed")
+	return nil
+}
+
+// ==================== K8S 配置相关方法 ====================
+
+// GetAllK8sConfigs 获取所有 K8s 配置
+func (m *MySQLStore) GetAllK8sConfigs(ctx context.Context) ([]types.K8sConfig, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := m.db.QueryContext(queryCtx, `
+		SELECT id, name, mode, content, namespace, server, token, username, password,
+		       insecure, ca_file, ca_data, enabled, last_update
+		FROM k8s_configs
+		ORDER BY last_update DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query k8s configs: %w", err)
+	}
+	defer rows.Close()
+
+	var configs []types.K8sConfig
+	for rows.Next() {
+		var config types.K8sConfig
+		var content, namespace, server, token, username, password, caFile, caData sql.NullString
+
+		err := rows.Scan(
+			&config.ID, &config.Name, &config.Mode, &content, &namespace,
+			&server, &token, &username, &password, &config.Insecure,
+			&caFile, &caData, &config.Enabled, &config.LastUpdate,
+		)
+		if err != nil {
+			log.Printf("[MySQLStore] ERROR: Failed to scan k8s config row: %v", err)
+			continue
+		}
+
+		if content.Valid {
+			config.Content = content.String
+		}
+		if namespace.Valid {
+			config.Namespace = namespace.String
+		}
+		if server.Valid {
+			config.Server = server.String
+		}
+		if token.Valid {
+			config.Token = token.String
+		}
+		if username.Valid {
+			config.Username = username.String
+		}
+		if password.Valid {
+			config.Password = password.String
+		}
+		if caFile.Valid {
+			config.CAFile = caFile.String
+		}
+		if caData.Valid {
+			config.CAData = caData.String
+		}
+
+		configs = append(configs, config)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating k8s configs: %w", err)
+	}
+
+	return configs, nil
+}
+
+// GetK8sConfig 获取指定 K8s 配置
+func (m *MySQLStore) GetK8sConfig(ctx context.Context, id string) (*types.K8sConfig, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var config types.K8sConfig
+	var content, namespace, server, token, username, password, caFile, caData sql.NullString
+
+	err := m.db.QueryRowContext(queryCtx, `
+		SELECT id, name, mode, content, namespace, server, token, username, password,
+		       insecure, ca_file, ca_data, enabled, last_update
+		FROM k8s_configs
+		WHERE id = ?
+	`, id).Scan(
+		&config.ID, &config.Name, &config.Mode, &content, &namespace,
+		&server, &token, &username, &password, &config.Insecure,
+		&caFile, &caData, &config.Enabled, &config.LastUpdate,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query k8s config: %w", err)
+	}
+
+	if content.Valid {
+		config.Content = content.String
+	}
+	if namespace.Valid {
+		config.Namespace = namespace.String
+	}
+	if server.Valid {
+		config.Server = server.String
+	}
+	if token.Valid {
+		config.Token = token.String
+	}
+	if username.Valid {
+		config.Username = username.String
+	}
+	if password.Valid {
+		config.Password = password.String
+	}
+	if caFile.Valid {
+		config.CAFile = caFile.String
+	}
+	if caData.Valid {
+		config.CAData = caData.String
+	}
+
+	return &config, nil
+}
+
+// GetEnabledK8sConfigs 获取所有启用的 K8s 配置
+func (m *MySQLStore) GetEnabledK8sConfigs(ctx context.Context) ([]types.K8sConfig, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := m.db.QueryContext(queryCtx, `
+		SELECT id, name, mode, content, namespace, server, token, username, password,
+		       insecure, ca_file, ca_data, enabled, last_update
+		FROM k8s_configs
+		WHERE enabled = TRUE
+		ORDER BY last_update DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query enabled k8s configs: %w", err)
+	}
+	defer rows.Close()
+
+	var configs []types.K8sConfig
+	for rows.Next() {
+		var config types.K8sConfig
+		var content, namespace, server, token, username, password, caFile, caData sql.NullString
+
+		err := rows.Scan(
+			&config.ID, &config.Name, &config.Mode, &content, &namespace,
+			&server, &token, &username, &password, &config.Insecure,
+			&caFile, &caData, &config.Enabled, &config.LastUpdate,
+		)
+		if err != nil {
+			log.Printf("[MySQLStore] ERROR: Failed to scan k8s config row: %v", err)
+			continue
+		}
+
+		if content.Valid {
+			config.Content = content.String
+		}
+		if namespace.Valid {
+			config.Namespace = namespace.String
+		}
+		if server.Valid {
+			config.Server = server.String
+		}
+		if token.Valid {
+			config.Token = token.String
+		}
+		if username.Valid {
+			config.Username = username.String
+		}
+		if password.Valid {
+			config.Password = password.String
+		}
+		if caFile.Valid {
+			config.CAFile = caFile.String
+		}
+		if caData.Valid {
+			config.CAData = caData.String
+		}
+
+		configs = append(configs, config)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating enabled k8s configs: %w", err)
+	}
+
+	return configs, nil
+}
+
+// GetDefaultK8sConfig 获取默认（第一个启用的）K8s 配置
+func (m *MySQLStore) GetDefaultK8sConfig(ctx context.Context) (*types.K8sConfig, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var config types.K8sConfig
+	var content, namespace, server, token, username, password, caFile, caData sql.NullString
+
+	err := m.db.QueryRowContext(queryCtx, `
+		SELECT id, name, mode, content, namespace, server, token, username, password,
+		       insecure, ca_file, ca_data, enabled, last_update
+		FROM k8s_configs
+		WHERE enabled = TRUE
+		ORDER BY last_update DESC
+		LIMIT 1
+	`).Scan(
+		&config.ID, &config.Name, &config.Mode, &content, &namespace,
+		&server, &token, &username, &password, &config.Insecure,
+		&caFile, &caData, &config.Enabled, &config.LastUpdate,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query default k8s config: %w", err)
+	}
+
+	if content.Valid {
+		config.Content = content.String
+	}
+	if namespace.Valid {
+		config.Namespace = namespace.String
+	}
+	if server.Valid {
+		config.Server = server.String
+	}
+	if token.Valid {
+		config.Token = token.String
+	}
+	if username.Valid {
+		config.Username = username.String
+	}
+	if password.Valid {
+		config.Password = password.String
+	}
+	if caFile.Valid {
+		config.CAFile = caFile.String
+	}
+	if caData.Valid {
+		config.CAData = caData.String
+	}
+
+	return &config, nil
+}
+
+// SetK8sConfig 保存或更新 K8s 配置到 MySQL
+func (m *MySQLStore) SetK8sConfig(ctx context.Context, config types.K8sConfig) error {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if config.ID == "" {
+		return fmt.Errorf("k8s config id cannot be empty")
+	}
+
+	now := time.Now().Unix()
+	if config.LastUpdate == 0 {
+		config.LastUpdate = now
+	}
+
+	// 使用 INSERT ... ON DUPLICATE KEY UPDATE 实现 upsert
+	_, err := m.db.ExecContext(queryCtx, `
+		INSERT INTO k8s_configs (
+			id, name, mode, content, namespace, server, token, username, password,
+			insecure, ca_file, ca_data, enabled, last_update
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			name = VALUES(name),
+			mode = VALUES(mode),
+			content = VALUES(content),
+			namespace = VALUES(namespace),
+			server = VALUES(server),
+			token = VALUES(token),
+			username = VALUES(username),
+			password = VALUES(password),
+			insecure = VALUES(insecure),
+			ca_file = VALUES(ca_file),
+			ca_data = VALUES(ca_data),
+			enabled = VALUES(enabled),
+			last_update = VALUES(last_update)
+	`, config.ID, config.Name, config.Mode, config.Content, config.Namespace,
+		config.Server, config.Token, config.Username, config.Password,
+		config.Insecure, config.CAFile, config.CAData, config.Enabled, config.LastUpdate)
+
+	if err != nil {
+		return fmt.Errorf("failed to save k8s config: %w", err)
+	}
+
+	log.Printf("[MySQLStore] K8s config saved: ID=%s, Name=%s, Mode=%s", config.ID, config.Name, config.Mode)
+	return nil
+}
+
+// DeleteK8sConfig 从 MySQL 删除 K8s 配置
+func (m *MySQLStore) DeleteK8sConfig(ctx context.Context, id string) error {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if id == "" {
+		return fmt.Errorf("k8s config id cannot be empty")
+	}
+
+	// 先查询是否存在，以便在日志中记录
+	var name string
+	err := m.db.QueryRowContext(queryCtx, `
+		SELECT name FROM k8s_configs WHERE id = ?
+	`, id).Scan(&name)
+
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("k8s config with id '%s' not found", id)
+	} else if err != nil {
+		return fmt.Errorf("failed to check existing config: %w", err)
+	}
+
+	// 执行删除
+	result, err := m.db.ExecContext(queryCtx, `
+		DELETE FROM k8s_configs WHERE id = ?
+	`, id)
+
+	if err != nil {
+		return fmt.Errorf("failed to delete k8s config: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		log.Printf("[MySQLStore] WARNING: Failed to get rows affected: %v", err)
+	} else {
+		log.Printf("[MySQLStore] K8s config deleted: ID=%s, Name=%s, RowsAffected=%d", id, name, rowsAffected)
+	}
+
+	return nil
+}
+
+// ==================== LLM 配置相关方法 ====================
+
+// GetAllLLMConfigs 获取所有 LLM 配置
+func (m *MySQLStore) GetAllLLMConfigs(ctx context.Context) ([]types.LLMConfig, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := m.db.QueryContext(queryCtx, `
+		SELECT id, name, provider, base_url, model, api_key, enabled, is_default, last_update
+		FROM llm_configs
+		ORDER BY last_update DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query llm configs: %w", err)
+	}
+	defer rows.Close()
+
+	var configs []types.LLMConfig
+	for rows.Next() {
+		var config types.LLMConfig
+		var baseURL, apiKey sql.NullString
+
+		err := rows.Scan(
+			&config.ID, &config.Name, &config.Provider, &baseURL,
+			&config.Model, &apiKey, &config.Enabled, &config.IsDefault, &config.LastUpdate,
+		)
+		if err != nil {
+			log.Printf("[MySQLStore] ERROR: Failed to scan llm config row: %v", err)
+			continue
+		}
+
+		if baseURL.Valid {
+			config.BaseURL = baseURL.String
+		}
+		// API Key 需要保存到内存（用于后续使用）
+		if apiKey.Valid {
+			config.APIKey = apiKey.String
+		}
+
+		configs = append(configs, config)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating llm configs: %w", err)
+	}
+
+	return configs, nil
+}
+
+// GetLLMConfig 获取指定 LLM 配置
+func (m *MySQLStore) GetLLMConfig(ctx context.Context, id string) (*types.LLMConfig, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var config types.LLMConfig
+	var baseURL, apiKey sql.NullString
+
+	err := m.db.QueryRowContext(queryCtx, `
+		SELECT id, name, provider, base_url, model, api_key, enabled, is_default, last_update
+		FROM llm_configs
+		WHERE id = ?
+	`, id).Scan(
+		&config.ID, &config.Name, &config.Provider, &baseURL,
+		&config.Model, &apiKey, &config.Enabled, &config.IsDefault, &config.LastUpdate,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query llm config: %w", err)
+	}
+
+	if baseURL.Valid {
+		config.BaseURL = baseURL.String
+	}
+	if apiKey.Valid {
+		config.APIKey = apiKey.String
+	}
+
+	return &config, nil
+}
+
+// GetDefaultLLMConfig 获取默认 LLM 配置
+func (m *MySQLStore) GetDefaultLLMConfig(ctx context.Context) (*types.LLMConfig, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var config types.LLMConfig
+	var baseURL, apiKey sql.NullString
+
+	err := m.db.QueryRowContext(queryCtx, `
+		SELECT id, name, provider, base_url, model, api_key, enabled, is_default, last_update
+		FROM llm_configs
+		WHERE is_default = TRUE AND enabled = TRUE
+		LIMIT 1
+	`).Scan(
+		&config.ID, &config.Name, &config.Provider, &baseURL,
+		&config.Model, &apiKey, &config.Enabled, &config.IsDefault, &config.LastUpdate,
+	)
+
+	if err == sql.ErrNoRows {
+		// 如果没有默认配置，返回第一个启用的配置
+		return m.GetFirstEnabledLLMConfig(ctx)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query default llm config: %w", err)
+	}
+
+	if baseURL.Valid {
+		config.BaseURL = baseURL.String
+	}
+	if apiKey.Valid {
+		config.APIKey = apiKey.String
+	}
+
+	return &config, nil
+}
+
+// GetFirstEnabledLLMConfig 获取第一个启用的 LLM 配置（用于默认配置回退）
+func (m *MySQLStore) GetFirstEnabledLLMConfig(ctx context.Context) (*types.LLMConfig, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var config types.LLMConfig
+	var baseURL, apiKey sql.NullString
+
+	err := m.db.QueryRowContext(queryCtx, `
+		SELECT id, name, provider, base_url, model, api_key, enabled, is_default, last_update
+		FROM llm_configs
+		WHERE enabled = TRUE
+		ORDER BY last_update DESC
+		LIMIT 1
+	`).Scan(
+		&config.ID, &config.Name, &config.Provider, &baseURL,
+		&config.Model, &apiKey, &config.Enabled, &config.IsDefault, &config.LastUpdate,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query first enabled llm config: %w", err)
+	}
+
+	if baseURL.Valid {
+		config.BaseURL = baseURL.String
+	}
+	if apiKey.Valid {
+		config.APIKey = apiKey.String
+	}
+
+	return &config, nil
+}
+
+// SetLLMConfig 保存或更新 LLM 配置到 MySQL
+func (m *MySQLStore) SetLLMConfig(ctx context.Context, config types.LLMConfig) error {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if config.ID == "" {
+		return fmt.Errorf("llm config id cannot be empty")
+	}
+
+	now := time.Now().Unix()
+	if config.LastUpdate == 0 {
+		config.LastUpdate = now
+	}
+
+	// 如果设置为默认，需要先取消其他配置的默认状态
+	if config.IsDefault {
+		_, err := m.db.ExecContext(queryCtx, `
+			UPDATE llm_configs SET is_default = FALSE WHERE is_default = TRUE
+		`)
+		if err != nil {
+			log.Printf("[MySQLStore] WARNING: Failed to unset other default llm configs: %v", err)
+			// 不返回错误，继续执行
+		}
+	}
+
+	// 使用 INSERT ... ON DUPLICATE KEY UPDATE 实现 upsert
+	// 注意：API Key 使用 COALESCE 保留原有值（如果新值为空）
+	_, err := m.db.ExecContext(queryCtx, `
+		INSERT INTO llm_configs (
+			id, name, provider, base_url, model, api_key, enabled, is_default, last_update
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			name = VALUES(name),
+			provider = VALUES(provider),
+			base_url = VALUES(base_url),
+			model = VALUES(model),
+			api_key = COALESCE(NULLIF(VALUES(api_key), ''), api_key),
+			enabled = VALUES(enabled),
+			is_default = VALUES(is_default),
+			last_update = VALUES(last_update)
+	`, config.ID, config.Name, config.Provider, config.BaseURL, config.Model,
+		config.APIKey, config.Enabled, config.IsDefault, config.LastUpdate)
+
+	if err != nil {
+		return fmt.Errorf("failed to save llm config: %w", err)
+	}
+
+	log.Printf("[MySQLStore] LLM config saved: ID=%s, Name=%s, Provider=%s, IsDefault=%v",
+		config.ID, config.Name, config.Provider, config.IsDefault)
+	return nil
+}
+
+// DeleteLLMConfig 从 MySQL 删除 LLM 配置
+func (m *MySQLStore) DeleteLLMConfig(ctx context.Context, id string) error {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if id == "" {
+		return fmt.Errorf("llm config id cannot be empty")
+	}
+
+	// 先查询是否存在，以便在日志中记录
+	var name string
+	err := m.db.QueryRowContext(queryCtx, `
+		SELECT name FROM llm_configs WHERE id = ?
+	`, id).Scan(&name)
+
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("llm config with id '%s' not found", id)
+	} else if err != nil {
+		return fmt.Errorf("failed to check existing config: %w", err)
+	}
+
+	// 执行删除
+	result, err := m.db.ExecContext(queryCtx, `
+		DELETE FROM llm_configs WHERE id = ?
+	`, id)
+
+	if err != nil {
+		return fmt.Errorf("failed to delete llm config: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		log.Printf("[MySQLStore] WARNING: Failed to get rows affected: %v", err)
+	} else {
+		log.Printf("[MySQLStore] LLM config deleted: ID=%s, Name=%s, RowsAffected=%d", id, name, rowsAffected)
+	}
+
 	return nil
 }
 
