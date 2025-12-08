@@ -109,53 +109,6 @@
         </div>
       </div>
       </el-card>
-
-      <!-- MCP 服务列表 -->
-      <el-card v-if="status" class="mcp-services-card" shadow="hover" style="margin-top: 20px;">
-      <template #header>
-        <div class="card-header">
-          <span>MCP 服务</span>
-        </div>
-      </template>
-
-      <el-table :data="mcpServices" style="width: 100%">
-        <el-table-column label="服务名称" width="200">
-          <template #default="scope">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <div
-                :style="{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '4px',
-                  backgroundColor: scope.row.iconColor || '#6366f1',
-                  color: 'white',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontWeight: 'bold'
-                }"
-              >
-                {{ scope.row.icon || 'M' }}
-              </div>
-              <span style="font-weight: 500;">{{ scope.row.name }}</span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column prop="description" label="描述" />
-        <el-table-column prop="status" label="状态" width="100">
-          <template #default="scope">
-            <el-tag :type="scope.row.status === 'running' ? 'success' : 'info'">
-              {{ scope.row.status === 'running' ? '运行中' : '未运行' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="150">
-          <template #default="scope">
-            <el-button size="small" @click="handleTest(scope.row)">测试</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      </el-card>
     </div>
 
     <el-skeleton v-else :rows="3" animated />
@@ -219,60 +172,64 @@ const getMethodType = (method) => {
   return methodMap[method] || 'info'
 }
 
-// 固定的 MCP 服务列表
-const mcpServices = ref([
-  {
-    name: 'k8s-mcp服务',
-    description: 'Kubernetes 集群管理 MCP 服务',
-    icon: 'K',
-    iconColor: '#409eff',
-    status: 'running'
-  },
-  {
-    name: 'ansible-mcp服务',
-    description: 'Ansible 自动化运维 MCP 服务',
-    icon: 'A',
-    iconColor: '#67c23a',
-    status: 'running'
-  },
-  {
-    name: '监控mcp服务',
-    description: '系统监控和告警 MCP 服务',
-    icon: 'M',
-    iconColor: '#e6a23c',
-    status: 'running'
-  }
-])
-
 // API 接口列表
 const apiEndpoints = ref([
+  // 系统状态和日志
   { method: 'GET', path: '/api/status', description: '获取系统状态（K8s、LLM、MCP 工具状态）' },
+  { method: 'GET', path: '/api/logs', description: '获取系统日志（支持过滤和分页）' },
+  { method: 'GET', path: '/api/current-llm', description: '获取当前默认 LLM 配置信息' },
+  
+  // 认证相关
+  { method: 'POST', path: '/api/auth/login', description: '用户登录' },
+  { method: 'POST', path: '/api/auth/logout', description: '用户登出' },
+  { method: 'GET', path: '/api/auth/check', description: '检查认证状态' },
+  
+  // 配置管理 - 通用
   { method: 'GET', path: '/api/config', description: '获取所有配置（K8s、LLM、MCP、智能体）' },
+  
+  // 配置管理 - 智能体（Agent）
   { method: 'GET', path: '/api/config/agents', description: '获取所有智能体配置列表' },
   { method: 'POST', path: '/api/config/agents', description: '创建新的智能体配置' },
   { method: 'PUT', path: '/api/config/agents/:id', description: '更新指定智能体配置' },
   { method: 'DELETE', path: '/api/config/agents/:id', description: '删除指定智能体配置' },
+  
+  // 配置管理 - LLM
   { method: 'GET', path: '/api/config/llm', description: '获取所有 LLM 配置列表' },
+  { method: 'GET', path: '/api/config/llm/:id', description: '获取指定 LLM 配置详情' },
   { method: 'POST', path: '/api/config/llm', description: '创建新的 LLM 配置' },
+  { method: 'PUT', path: '/api/config/llm/:id', description: '更新指定 LLM 配置' },
+  { method: 'DELETE', path: '/api/config/llm/:id', description: '删除指定 LLM 配置' },
+  
+  // 配置管理 - K8s
   { method: 'GET', path: '/api/config/k8s', description: '获取所有 K8s 配置列表' },
+  { method: 'GET', path: '/api/config/k8s/:id', description: '获取指定 K8s 配置详情' },
   { method: 'POST', path: '/api/config/k8s', description: '创建新的 K8s 配置' },
+  { method: 'PUT', path: '/api/config/k8s/:id', description: '更新指定 K8s 配置' },
+  { method: 'DELETE', path: '/api/config/k8s/:id', description: '删除指定 K8s 配置' },
+  
+  // 配置管理 - 远程 MCP
   { method: 'GET', path: '/api/config/remote-mcp', description: '获取所有远程 MCP 服务配置' },
   { method: 'POST', path: '/api/config/remote-mcp', description: '创建新的远程 MCP 服务配置' },
-  { method: 'POST', path: '/api/chat', description: '发送对话请求，进行智能问答' },
-  { method: 'GET', path: '/api/sessions', description: '获取会话列表（支持分页）' },
-  { method: 'GET', path: '/api/sessions/:sessionId', description: '获取指定会话的详细信息' },
+  { method: 'PUT', path: '/api/config/remote-mcp/:identifier', description: '更新指定远程 MCP 服务配置' },
+  { method: 'DELETE', path: '/api/config/remote-mcp/:identifier', description: '删除指定远程 MCP 服务配置' },
+  { method: 'POST', path: '/api/config/remote-mcp/test-endpoint', description: '测试远程 MCP 端点路径（不保存配置）' },
+  { method: 'GET', path: '/api/config/remote-mcp/:identifier/tools', description: '获取指定远程 MCP 服务的工具列表（支持 ?refresh=true 强制刷新）' },
+  { method: 'POST', path: '/api/config/remote-mcp/:identifier/test', description: '测试远程 MCP 服务连接并获取工具列表' },
+  
+  // 工具相关
   { method: 'GET', path: '/api/tools', description: '获取所有可用的 MCP 工具列表' },
   { method: 'POST', path: '/api/tools/call', description: '调用指定的 MCP 工具' },
-  { method: 'POST', path: '/api/test-k8s', description: '测试 Kubernetes 连接' },
-  { method: 'POST', path: '/api/test-llm', description: '测试 LLM 连接' },
-  { method: 'GET', path: '/api/logs', description: '获取系统日志（支持过滤和分页）' },
-  { method: 'GET', path: '/api/current-llm', description: '获取当前默认 LLM 配置信息' }
+  
+  // 测试连接
+  { method: 'GET', path: '/api/test-k8s', description: '测试 Kubernetes 连接（GET 方式）' },
+  { method: 'POST', path: '/api/test-k8s', description: '测试 Kubernetes 连接（支持指定配置 ID）' },
+  { method: 'POST', path: '/api/test-llm', description: '测试 LLM 连接（支持指定配置 ID）' },
+  
+  // 对话和会话
+  { method: 'POST', path: '/api/chat', description: '发送对话请求，进行智能问答' },
+  { method: 'GET', path: '/api/sessions', description: '获取会话列表（支持分页）' },
+  { method: 'GET', path: '/api/sessions/:sessionId', description: '获取指定会话的详细信息' }
 ])
-
-const handleTest = (service) => {
-  ElMessage.info(`正在测试 ${service.name}...`)
-  // TODO: 实现服务测试逻辑
-}
 </script>
 
 <style scoped>

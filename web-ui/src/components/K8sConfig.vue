@@ -128,7 +128,46 @@
           </template>
 
           <el-form-item>
-            <el-checkbox v-model="form.insecure">跳过 TLS 验证</el-checkbox>
+            <el-checkbox v-model="form.insecure" :disabled="hasCACert">跳过 TLS 验证</el-checkbox>
+            <el-text type="info" size="small" style="display: block; margin-top: 5px;">
+              如果配置了 CA 证书，将使用证书验证，此选项将被禁用
+            </el-text>
+          </el-form-item>
+
+          <el-form-item label="CA 证书（可选）">
+            <el-radio-group v-model="caCertMode" style="margin-bottom: 10px;">
+              <el-radio label="none">不使用 CA 证书</el-radio>
+              <el-radio label="file">上传证书文件</el-radio>
+              <el-radio label="text">输入证书内容</el-radio>
+            </el-radio-group>
+
+            <!-- 文件上传方式 -->
+            <el-upload
+              v-if="caCertMode === 'file'"
+              :file-list="caCertFileList"
+              :auto-upload="false"
+              :on-change="handleCACertChange"
+              :limit="1"
+              accept=".crt,.pem,.cert"
+            >
+              <el-button type="primary" size="small">选择 CA 证书文件</el-button>
+              <template #tip>
+                <div class="el-upload__tip">支持 .crt, .pem, .cert 格式的证书文件</div>
+              </template>
+            </el-upload>
+
+            <!-- 文本输入方式 -->
+            <el-input
+              v-if="caCertMode === 'text'"
+              v-model="form.caData"
+              type="textarea"
+              :rows="6"
+              placeholder="请输入 PEM 格式的 CA 证书内容（-----BEGIN CERTIFICATE----- ... -----END CERTIFICATE-----）"
+              style="margin-top: 10px;"
+            />
+            <el-text v-if="caCertMode === 'text'" type="info" size="small" style="display: block; margin-top: 5px;">
+              证书内容将自动进行 base64 编码存储
+            </el-text>
           </el-form-item>
         </template>
       </el-form>
@@ -144,7 +183,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { getK8sConfigs, saveK8sConfig, deleteK8sConfig, testK8s as testK8sAPI } from '../api/config'
@@ -157,6 +196,8 @@ const editingItem = ref(null)
 const loading = ref(false)
 const authType = ref('token')
 const kubeconfigFileList = ref([])
+const caCertMode = ref('none')
+const caCertFileList = ref([])
 
 const form = reactive({
   name: '',
@@ -168,7 +209,14 @@ const form = reactive({
   password: '',
   insecure: false,
   content: '',
+  caFile: '',
+  caData: '',
   enabled: true
+})
+
+// 计算是否有 CA 证书
+const hasCACert = computed(() => {
+  return caCertMode.value !== 'none' && (form.caData || form.caFile)
 })
 
 const loadK8sConfigs = async () => {
@@ -197,13 +245,40 @@ const handleEdit = (k8s) => {
     password: '', // 不显示密码
     insecure: k8s.insecure || false,
     content: k8s.content || '',
+    caFile: k8s.caFile || '',
+    caData: k8s.caData || '',
     enabled: k8s.enabled !== false
   })
+  
+  // 判断 CA 证书模式
+  if (k8s.caFile) {
+    caCertMode.value = 'file'
+  } else if (k8s.caData) {
+    caCertMode.value = 'text'
+    // 如果 caData 是 base64 编码的，需要解码显示
+    try {
+      const decoded = atob(k8s.caData)
+      // 检查是否是有效的 PEM 格式
+      if (decoded.includes('BEGIN CERTIFICATE')) {
+        form.caData = decoded
+      } else {
+        // 如果解码后不是 PEM 格式，可能是原始 PEM，直接使用
+        form.caData = k8s.caData
+      }
+    } catch (e) {
+      // 如果不是 base64，直接使用
+      form.caData = k8s.caData
+    }
+  } else {
+    caCertMode.value = 'none'
+  }
+  
   if (k8s.token) {
     authType.value = 'token'
   } else if (k8s.username) {
     authType.value = 'username'
   }
+  caCertFileList.value = []
   showDialog.value = true
 }
 
@@ -211,6 +286,8 @@ const resetForm = () => {
   editingItem.value = null
   authType.value = 'token'
   kubeconfigFileList.value = []
+  caCertMode.value = 'none'
+  caCertFileList.value = []
   Object.assign(form, {
     name: '',
     mode: 'manual',
@@ -221,6 +298,8 @@ const resetForm = () => {
     password: '',
     insecure: false,
     content: '',
+    caFile: '',
+    caData: '',
     enabled: true
   })
 }
@@ -230,6 +309,23 @@ const handleKubeconfigChange = (file) => {
   reader.onload = (e) => {
     const content = e.target.result
     form.content = btoa(content) // base64 编码
+  }
+  reader.readAsText(file.raw)
+}
+
+const handleCACertChange = (file) => {
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const content = e.target.result
+    // 将证书内容进行 base64 编码存储
+    form.caData = btoa(content)
+    caCertFileList.value = [file]
+  }
+  reader.onloadend = () => {
+    if (form.caData) {
+      // 如果设置了 CA 证书，自动禁用 insecure
+      form.insecure = false
+    }
   }
   reader.readAsText(file.raw)
 }
@@ -280,6 +376,29 @@ const saveK8s = async () => {
       } else {
         delete config.token
       }
+      
+      // 处理 CA 证书
+      if (caCertMode.value === 'none') {
+        delete config.caFile
+        delete config.caData
+      } else if (caCertMode.value === 'file') {
+        // 文件上传方式：caData 已经包含 base64 编码的内容
+        delete config.caFile // 前端不支持文件路径
+        // caData 已经在上传时进行了 base64 编码
+      } else if (caCertMode.value === 'text') {
+        // 文本输入方式：将 PEM 内容进行 base64 编码
+        if (config.caData && config.caData.includes('BEGIN CERTIFICATE')) {
+          // 如果是 PEM 格式，进行 base64 编码
+          config.caData = btoa(config.caData)
+        }
+        // 如果已经是 base64，不需要再次编码
+        delete config.caFile
+      }
+      
+      // 如果配置了 CA 证书，确保 insecure 为 false
+      if (config.caData || config.caFile) {
+        config.insecure = false
+      }
     }
     await saveK8sConfig(config)
     const clusterName = form.name || '未命名集群'
@@ -320,7 +439,7 @@ const handleDelete = async (k8s) => {
 
 const testK8s = async (k8s) => {
   try {
-    const result = await testK8sAPI()
+    const result = await testK8sAPI(k8s.id)
     if (result.status === 'ok') {
       ElMessage.success('连接测试成功: ' + result.message)
     } else {

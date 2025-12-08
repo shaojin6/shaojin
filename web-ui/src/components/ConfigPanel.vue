@@ -452,6 +452,7 @@ const llmConfig = reactive({
 })
 
 const k8sConfig = reactive({
+  id: '',
   mode: 'manual',
   server: '',
   namespace: 'default',
@@ -482,6 +483,10 @@ const loadConfig = async () => {
         k8sAuthType.value = 'token'
       } else if (config.k8s.username) {
         k8sAuthType.value = 'username'
+      }
+      // 设置 insecure 标志
+      if (config.k8s.insecure !== undefined) {
+        k8sInsecure.value = config.k8s.insecure
       }
       // 不显示敏感信息
       if (k8sConfig.token && k8sConfig.token.length > 8) {
@@ -764,10 +769,8 @@ const saveK8sConfig = async () => {
       } else {
         delete configToSave.token
       }
-      // 设置 insecure
-      if (k8sInsecure.value) {
-        configToSave.insecure = true
-      }
+      // 设置 insecure（明确设置，确保 false 值也会保存）
+      configToSave.insecure = k8sInsecure.value || false
     } else {
       // kubeconfig 模式，清理手动配置字段
       delete configToSave.server
@@ -790,7 +793,8 @@ const saveK8sConfig = async () => {
 const testK8sConnection = async () => {
   k8sTesting.value = true
   try {
-    const result = await testK8s()
+    // 如果配置有 ID，传递 ID；否则不传递（使用默认配置）
+    const result = await testK8s(k8sConfig.id)
     if (result.status === 'ok') {
       ElMessage.success('K8s 连接测试成功: ' + result.message)
     } else {

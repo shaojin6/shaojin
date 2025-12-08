@@ -81,15 +81,11 @@ export async function getRemoteMCPs() {
 }
 
 export async function addRemoteMCP(config) {
-  await axios.post(`${API_BASE}/config/remote-mcp`, config, {
-    timeout: 10000 // 10秒超时，避免工具刷新过程阻塞太久
-  })
+  await axios.post(`${API_BASE}/config/remote-mcp`, config)
 }
 
 export async function updateRemoteMCP(identifier, config) {
-  await axios.put(`${API_BASE}/config/remote-mcp/${encodeURIComponent(identifier)}`, config, {
-    timeout: 10000 // 10秒超时，避免工具刷新过程阻塞太久
-  })
+  await axios.put(`${API_BASE}/config/remote-mcp/${encodeURIComponent(identifier)}`, config)
 }
 
 export async function deleteRemoteMCP(identifier) {
@@ -101,16 +97,11 @@ export async function testRemoteMCP(identifier) {
   return response.data
 }
 
-export async function getRemoteMCPTools(identifier, refresh = false, timeout = null) {
+export async function getRemoteMCPTools(identifier, refresh = false) {
   const url = `${API_BASE}/config/remote-mcp/${encodeURIComponent(identifier)}/tools`
-  
-  // 如果指定了超时时间，使用指定的；否则使用默认值
-  // 刷新时使用更长的超时时间（因为可能需要从远程获取）
-  const defaultTimeout = refresh ? 300000 : 10000 // 刷新：5分钟，普通加载：10秒
-  
   const response = await axios.get(url, {
     params: refresh ? { refresh: 'true' } : {},
-    timeout: timeout || defaultTimeout
+    timeout: 5000 // 5秒超时，避免长时间等待
   })
   return response.data
 }

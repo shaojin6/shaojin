@@ -32,10 +32,10 @@
                 size="small"
                 text
                 :loading="scope.row.refreshingTools"
-                @click="refreshToolsFromCache(scope.row)"
+                @click="refreshToolsForRow(scope.row)"
               >
                 <el-icon><Refresh /></el-icon>
-                本地刷新
+                刷新
               </el-button>
             </div>
             <div v-if="scope.row.loadingTools" class="tools-expand-body">
@@ -318,7 +318,7 @@
               style="margin-left: 10px"
             >
               <el-icon><Refresh /></el-icon>
-              Remote MCP刷新
+              刷新
             </el-button>
           </div>
           <div class="tools-list">
@@ -404,15 +404,9 @@ const loadRemoteMCPs = async () => {
       const loadPromises = remoteMCPs.value
         .filter(mcp => mcp.enabled) // 只加载启用的服务
         .map(mcp => {
-          // 严格使用 serverId，不再使用 name 作为 fallback
-          if (!mcp.serverId) {
-            console.error('配置错误：缺少 serverId', mcp)
-            return Promise.resolve({ tools: [], count: 0 })
-          }
-          // 计算超时时间：普通加载时使用超时时间（毫秒），默认 60 秒 = 60000 毫秒
-          const timeout = (mcp.timeout || 60) * 1000
+          const identifier = mcp.serverId || mcp.name
           // 静默加载，不显示错误（因为可能还没有工具）
-          return getRemoteMCPTools(mcp.serverId, false, timeout)
+          return getRemoteMCPTools(identifier, false)
             .then(result => {
               if (result && result.tools && result.tools.length > 0) {
                 mcp.tools = result.tools
@@ -455,21 +449,20 @@ const handleAdd = () => {
 
 const handleEdit = (mcp) => {
   editingItem.value = mcp
-  // 使用深拷贝避免修改原始对象
-  Object.assign(form, JSON.parse(JSON.stringify({
+  Object.assign(form, {
     name: mcp.name || '',
     serverId: mcp.serverId || '',
     type: mcp.type || 'http',
     baseUrl: mcp.baseUrl || '',
     icon: mcp.icon || 'M',
     iconColor: mcp.iconColor || '#6366f1',
-    timeout: mcp.timeout || 0, // 从数据库读取，如果为0则前端表单会显示默认值
-    sseReadTimeout: mcp.sseReadTimeout || 0, // 从数据库读取，如果为0则前端表单会显示默认值
+    timeout: mcp.timeout || 30,
+    sseReadTimeout: mcp.sseReadTimeout || 300,
     headers: mcp.headers
       ? Object.entries(mcp.headers).map(([name, value]) => ({ name, value }))
       : [],
     toolsEndpoint: mcp.toolsEndpoint || ''
-  })))
+  })
   showDialog.value = true
 }
 
@@ -562,8 +555,8 @@ const saveRemoteMCP = async () => {
       baseUrl: form.baseUrl,
       icon: form.icon,
       iconColor: form.iconColor,
-      timeout: form.timeout || 0, // 从前端传入，如果为0则使用数据库中的值
-      sseReadTimeout: form.sseReadTimeout || 0, // 从前端传入，如果为0则使用数据库中的值
+      timeout: form.timeout || 30,
+      sseReadTimeout: form.sseReadTimeout || 300,
       headers: headersObj,
       toolsEndpoint: form.toolsEndpoint || '',
       enabled: true
@@ -603,12 +596,8 @@ const handleDelete = async (mcp) => {
         type: 'warning'
       }
     )
-    // 严格使用 serverId，不再使用 name 作为 fallback
-    if (!mcp.serverId) {
-      ElMessage.error('配置错误：缺少 serverId')
-      return
-    }
-    await deleteRemoteMCPAPI(mcp.serverId)
+    const identifier = mcp.serverId || mcp.name
+    await deleteRemoteMCPAPI(identifier)
     const serviceName = mcp.name || mcp.serverId || '未命名服务'
     ElMessage.success(`${serviceName} 删除成功`)
     await loadRemoteMCPs()
@@ -622,12 +611,7 @@ const handleDelete = async (mcp) => {
 
 const toggleRemoteMCP = async (mcp) => {
   try {
-    // 严格使用 serverId，不再使用 name 作为 fallback
-    if (!mcp.serverId) {
-      ElMessage.error('配置错误：缺少 serverId')
-      return
-    }
-    await updateRemoteMCP(mcp.serverId, { ...mcp, enabled: mcp.enabled })
+    await updateRemoteMCP(mcp.serverId || mcp.name, { ...mcp, enabled: mcp.enabled })
     const serviceName = mcp.name || mcp.serverId || '未命名服务'
     ElMessage.success(mcp.enabled ? `${serviceName} 已启用` : `${serviceName} 已禁用`)
     emit('config-updated')
@@ -687,12 +671,8 @@ const testEndpointPath = async () => {
 
 const testRemoteMCP = async (mcp) => {
   try {
-    // 严格使用 serverId，不再使用 name 作为 fallback
-    if (!mcp.serverId) {
-      ElMessage.error('配置错误：缺少 serverId')
-      return
-    }
-    const result = await testRemoteMCPAPI(mcp.serverId)
+    const identifier = mcp.serverId || mcp.name
+    const result = await testRemoteMCPAPI(identifier)
     if (result.status === 'ok') {
       // 更新工具数量
       mcp.toolsCount = result.count || 0
@@ -722,13 +702,8 @@ const showTools = async (mcp) => {
     return
   }
   
-  // 严格使用 serverId，不再使用 name 作为 fallback
-  if (!mcp.serverId) {
-    ElMessage.error('配置错误：缺少 serverId')
-    return
-  }
   currentMCPName.value = mcp.name || mcp.serverId
-  currentMCPId.value = mcp.serverId
+  currentMCPId.value = mcp.serverId || mcp.name
   showToolsDialog.value = true
   await loadTools()
 }
@@ -737,22 +712,7 @@ const showTools = async (mcp) => {
 const loadTools = async (forceRefresh = false) => {
   loadingTools.value = true
   try {
-    // 获取当前 MCP 配置以获取超时时间（严格按 serverId 查找）
-    const currentMCP = remoteMCPs.value.find(mcp => mcp.serverId === currentMCPId.value)
-    
-    // 计算超时时间：如果是刷新，使用 SSE 读取超时时间；否则使用普通超时时间
-    let timeout = null
-    if (currentMCP) {
-      if (forceRefresh) {
-        // 刷新时使用 SSE 读取超时时间（毫秒），默认 300 秒 = 300000 毫秒
-        timeout = (currentMCP.sseReadTimeout || 300) * 1000
-      } else {
-        // 普通加载时使用超时时间（毫秒），默认 60 秒 = 60000 毫秒
-        timeout = (currentMCP.timeout || 60) * 1000
-      }
-    }
-    
-    const result = await getRemoteMCPTools(currentMCPId.value, forceRefresh, timeout)
+    const result = await getRemoteMCPTools(currentMCPId.value, forceRefresh)
     toolsList.value = result.tools || []
     if (result.cached) {
       // 如果是缓存的数据，可以显示提示（可选）
@@ -766,35 +726,18 @@ const loadTools = async (forceRefresh = false) => {
   }
 }
 
-// Remote MCP刷新：强制从远程MCP服务获取工具列表（会更新Redis缓存）
+// 刷新工具列表（强制从远程获取）
 const refreshTools = () => {
   loadTools(true)
 }
 
 const loadToolsForRow = async (row, force = false) => {
   if (!row) return
-  // 严格使用 serverId，不再使用 name 作为 fallback
-  if (!row.serverId) {
-    console.error('配置错误：缺少 serverId', row)
-    return
-  }
-  const identifier = row.serverId
+  const identifier = row.serverId || row.name
 
   // 如果已加载且不是强制刷新，直接返回
   if (!force && row.tools && row.tools.length > 0) {
     return
-  }
-
-  // 计算超时时间：如果是刷新，使用 SSE 读取超时时间；否则使用普通超时时间
-  let timeout = null
-  if (row) {
-    if (force) {
-      // 刷新时使用 SSE 读取超时时间（毫秒），默认 300 秒 = 300000 毫秒
-      timeout = (row.sseReadTimeout || 300) * 1000
-    } else {
-      // 普通加载时使用超时时间（毫秒），默认 60 秒 = 60000 毫秒
-      timeout = (row.timeout || 60) * 1000
-    }
   }
 
   // 如果已有工具数量但工具列表为空，说明可能正在加载，先尝试从缓存加载
@@ -805,7 +748,7 @@ const loadToolsForRow = async (row, force = false) => {
     (!row.tools || row.tools.length === 0)
   ) {
     try {
-      const result = await getRemoteMCPTools(identifier, false, timeout)
+      const result = await getRemoteMCPTools(identifier, false)
       if (result && result.tools && result.tools.length > 0) {
         row.tools = result.tools
         row.toolsCount = result.tools.length
@@ -826,7 +769,7 @@ const loadToolsForRow = async (row, force = false) => {
   }
 
   try {
-    const result = await getRemoteMCPTools(identifier, force, timeout)
+    const result = await getRemoteMCPTools(identifier, force)
     row.tools = result.tools || []
     row.toolsCount = row.tools.length
   } catch (error) {
@@ -845,45 +788,8 @@ const loadToolsForRow = async (row, force = false) => {
   }
 }
 
-// 从远程MCP服务强制刷新工具列表（会更新Redis缓存）
 const refreshToolsForRow = (row) => {
   loadToolsForRow(row, true)
-}
-
-// 从本地Redis缓存刷新工具列表（不调用远程服务）
-const refreshToolsFromCache = async (row) => {
-  if (!row) return
-  // 严格使用 serverId，不再使用 name 作为 fallback
-  if (!row.serverId) {
-    console.error('配置错误：缺少 serverId', row)
-    return
-  }
-  const identifier = row.serverId
-  
-  // 计算超时时间：从缓存加载使用普通超时时间
-  const timeout = (row.timeout || 60) * 1000
-  
-  row.refreshingTools = true
-  try {
-    // 从缓存加载，不强制刷新（force=false）
-    const result = await getRemoteMCPTools(identifier, false, timeout)
-    if (result && result.tools && result.tools.length > 0) {
-      row.tools = result.tools
-      row.toolsCount = result.tools.length
-    } else {
-      row.tools = []
-      row.toolsCount = 0
-      ElMessage.info('缓存中暂无工具列表，请使用 Remote MCP刷新 从远程获取')
-    }
-  } catch (error) {
-    ElMessage.error('从缓存加载工具列表失败: ' + (error.response?.data?.error || error.message))
-    if (!row.tools || row.tools.length === 0) {
-      row.tools = []
-      row.toolsCount = 0
-    }
-  } finally {
-    row.refreshingTools = false
-  }
 }
 
 const handleExpandChange = (row) => {
