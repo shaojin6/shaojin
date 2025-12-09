@@ -2,16 +2,25 @@
 
 一个基于 Go 语言开发的 Kubernetes Model Context Protocol (MCP) 智能体，允许大语言模型（LLM）通过标准化的 MCP 协议与 Kubernetes 集群交互。
 
+**当前版本：v0.1.7** | [更新日志](docs/CHANGELOG_v0.1.7.md)
+
 ## 功能特性
 
 - ✅ 符合 MCP (Model Context Protocol) 规范
 - ✅ 基于 JSON-RPC 2.0 协议通信
+- ✅ **Function Calling 模式支持**（v0.1.7 新增）
+  - 支持标准的 Function Calling API（优先使用）
+  - 自动检测模型能力，智能选择最佳模式
+  - 支持 DashScope/Qwen、OpenAI 等主流模型
+  - 自动回退到 Prompt-based 模式（兼容所有模型）
 - ✅ 支持多种 Kubernetes 资源操作
 - ✅ 安全的 RBAC 权限控制
 - ✅ 支持集群内和集群外部署
 - ✅ 完整的工具注册和调用机制
 - ✅ Web API 接口（REST）
 - ✅ 支持手动指定 Kubernetes API 地址
+- ✅ 配置持久化存储（MySQL）
+- ✅ 支持 CA 证书配置（生产环境）
 
 ## 已实现的工具
 
@@ -147,10 +156,16 @@ k8s-mcp/
 │   └── web/
 │       ├── api/
 │       │   └── router.go    # HTTP 路由
+│       ├── chat/
+│       │   └── orchestrator.go  # 对话编排器（Function Calling + Prompt-based）
+│       ├── llm/
+│       │   ├── client.go        # LLM 客户端（支持 Function Calling）
+│       │   └── capabilities.go # 模型能力检测（v0.1.7+）
 │       ├── mcpclient/
 │       │   └── client.go     # MCP 客户端封装
 │       ├── store/
-│       │   └── store.go      # 配置存储
+│       │   ├── store.go      # 配置存储
+│       │   └── mysql_store.go # MySQL 持久化存储
 │       └── types/
 │           └── types.go      # 类型定义
 ├── pkg/
@@ -161,7 +176,9 @@ k8s-mcp/
 │   ├── rbac.yaml        # RBAC 配置
 │   └── deployment.yaml  # Kubernetes 部署配置
 ├── docs/
-│   └── WEB_UI_DEVELOPMENT.md  # 开发指南
+│   ├── WEB_UI_DEVELOPMENT.md  # 开发指南
+│   ├── CHANGELOG_v0.1.7.md    # v0.1.7 更新日志
+│   └── FUNCTION_CALLING_*.md   # Function Calling 相关文档
 ├── go.mod
 ├── Dockerfile
 ├── Makefile
@@ -171,6 +188,18 @@ k8s-mcp/
 ## LLM 配置
 
 项目支持通过公网 LLM API（如通义千问、OpenAI）进行对话式 Kubernetes 管理。
+
+### 支持的模型
+
+#### Function Calling 模式（v0.1.7+）
+- **DashScope/Qwen**: qwen-max, qwen-plus, qwen-turbo, qwen-7b-chat
+- **OpenAI**: gpt-4, gpt-4-turbo, gpt-3.5-turbo 等
+
+#### Prompt-based 模式（兼容所有模型）
+- 所有模型（包括不支持 Function Calling 的模型）
+- Ollama 等本地模型
+
+> **注意**：系统会自动检测模型能力并选择最佳模式，用户无需手动配置。
 
 ### 快速配置通义千问
 
@@ -208,6 +237,15 @@ k8s-mcp/
 
 详细配置说明请参考 [docs/LLM_CONFIG.md](docs/LLM_CONFIG.md)。
 
+### Function Calling 模式（v0.1.7+）
+
+系统会自动检测模型是否支持 Function Calling，并智能选择最佳模式：
+
+- **支持 Function Calling 的模型**：自动使用 Function Calling 模式，提供更准确的工具调用
+- **不支持 Function Calling 的模型**：自动使用 Prompt-based 模式，保持兼容性
+
+无需手动配置，系统会在首次使用时自动检测并保存策略。
+
 ## 开发指南
 
 详细的开发指南、API 文档和扩展说明请参考 [docs/WEB_UI_DEVELOPMENT.md](docs/WEB_UI_DEVELOPMENT.md)。
@@ -231,6 +269,15 @@ docker build -t k8s-mcp-agent:latest .
 ```bash
 kubectl apply -f deploy/deployment.yaml
 ```
+
+## 版本历史
+
+- **v0.1.7** (最新) - Function Calling 支持，模型能力自动检测
+- **v0.1.6** - K8s 配置测试修复，CA 证书支持
+- **v0.1.5** - 统一配置管理到 MySQL 存储
+- **v0.1.4** - 文档和脚本优化
+
+详细更新日志请参考 [docs/CHANGELOG_v0.1.7.md](docs/CHANGELOG_v0.1.7.md)
 
 ## 许可证
 
