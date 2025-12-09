@@ -99,6 +99,7 @@ type AgentConfig struct {
 	MCPServerID  string `json:"mcpServerId"`
 	LLMID        string `json:"llmId,omitempty"`
 	SystemPrompt string `json:"systemPrompt,omitempty"` // 自定义系统提示词（可选）
+	Strategy     string `json:"strategy,omitempty"`     // Agent策略: "function_call" | "prompt_based" | "" (自动检测)
 	Enabled      bool   `json:"enabled"`
 	IsDefault    bool   `json:"isDefault"`
 	CreatedAt    int64  `json:"createdAt,omitempty"`
@@ -119,4 +120,20 @@ type ConfigResponse struct {
 	LLM        []LLMConfig       `json:"llm,omitempty"` // 多个LLM配置
 	RemoteMCPs []RemoteMCPConfig `json:"remoteMcps,omitempty"`
 	Agents     []AgentConfig     `json:"agents,omitempty"`
+}
+
+// ModelFeature 模型能力枚举
+type ModelFeature string
+
+const (
+	ModelFeatureToolCall      ModelFeature = "tool-call"
+	ModelFeatureMultiToolCall ModelFeature = "multi-tool-call"
+	ModelFeatureStreamToolCall ModelFeature = "stream-tool-call"
+)
+
+// ModelSchema 模型架构信息
+type ModelSchema struct {
+	Provider string         `json:"provider"`
+	Model    string         `json:"model"`
+	Features []ModelFeature `json:"features,omitempty"`
 }

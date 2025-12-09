@@ -1115,11 +1115,34 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 			}
 			log.Printf("[Chat API] Orchestrator created successfully in %v", orchDuration)
 
+			// 检测并保存 Agent Strategy（如果未设置）
+			if agent.Strategy == "" {
+				// 检测模型能力
+				supportsFC := llm.SupportsFunctionCalling(llmConfig.Provider, llmConfig.Model)
+				if supportsFC {
+					agent.Strategy = "function_call"
+					log.Printf("[Chat API] Agent %s: Model %s supports Function Calling, setting strategy to function_call", 
+						agent.Name, llmConfig.Model)
+				} else {
+					agent.Strategy = "prompt_based"
+					log.Printf("[Chat API] Agent %s: Model %s does not support Function Calling, setting strategy to prompt_based", 
+						agent.Name, llmConfig.Model)
+				}
+				
+				// 保存 Strategy 到数据库
+				agent.UpdatedAt = time.Now().Unix()
+				cfgStore.SetAgent(*agent)
+				log.Printf("[Chat API] Saved Agent Strategy: %s for agent %s", agent.Strategy, agent.Name)
+			} else {
+				log.Printf("[Chat API] Agent %s using stored strategy: %s", agent.Name, agent.Strategy)
+			}
+
 			// 处理对话（添加超时上下文，10分钟超时，因为 qwen3-max 等大模型可能需要更长时间）
-			log.Printf("[Chat API] Processing chat request: agent=%s, session=%s, message=%s", agent.Name, req.SessionID, req.Message)
+			log.Printf("[Chat API] Processing chat request: agent=%s, session=%s, message=%s, strategy=%s", 
+				agent.Name, req.SessionID, req.Message, agent.Strategy)
 			ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
 			defer cancel()
-			response, err := orch.Chat(ctx, req.SessionID, req.Message, agent)
+			response, err := orch.Chat(ctx, req.SessionID, req.Message, agent, llmConfig)
 			if err != nil {
 				log.Printf("[Chat API] ERROR in chat: %v", err)
 				errMsg := err.Error()

@@ -16,13 +16,48 @@ import (
 // Client LLM 客户端接口
 type Client interface {
 	Chat(messages []Message) (string, error)
+	ChatWithTools(messages []Message, tools []Tool) (*ChatResponse, error) // 新增：支持 Function Calling
 	TestConnection() error
 }
 
 // Message 对话消息
 type Message struct {
-	Role    string `json:"role"` // system, user, assistant
-	Content string `json:"content"`
+	Role       string      `json:"role"`                 // system, user, assistant, tool
+	Content    string      `json:"content,omitempty"`     // 文本内容
+	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`  // 工具调用（assistant 消息）
+	ToolCallID string      `json:"tool_call_id,omitempty"` // 工具调用 ID（tool 消息）
+}
+
+// ChatResponse LLM 响应（包含工具调用信息）
+type ChatResponse struct {
+	Content   string     `json:"content"`              // LLM 文本响应
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"` // 工具调用列表（如果有）
+}
+
+// Tool 工具定义（用于 Function Calling）
+type Tool struct {
+	Type     string       `json:"type"`     // "function"
+	Function ToolFunction `json:"function"`
+}
+
+// ToolFunction 工具函数定义
+type ToolFunction struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Parameters  map[string]interface{} `json:"parameters"` // JSON Schema
+}
+
+// ToolCall LLM 返回的工具调用
+type ToolCall struct {
+	ID       string          `json:"id"`
+	Type     string          `json:"type"` // "function"
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolCallFunction 工具调用函数信息
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // JSON 字符串
 }
 
 // NewClient 根据配置创建 LLM 客户端
@@ -199,6 +234,118 @@ func (c *DashScopeClient) Chat(messages []Message) (string, error) {
 	return responseContent, nil
 }
 
+// ChatWithTools 发送带工具调用的对话请求（Function Calling）
+func (c *DashScopeClient) ChatWithTools(messages []Message, tools []Tool) (*ChatResponse, error) {
+	// 验证配置
+	if c.config.APIKey == "" {
+		return nil, fmt.Errorf("API Key is required but not configured")
+	}
+
+	baseURL := c.config.BaseURL
+	if baseURL == "" {
+		baseURL = "https://dashscope.aliyuncs.com/api/v1"
+	}
+
+	// 使用 OpenAI 兼容接口支持 Function Calling
+	// 兼容接口: https://dashscope.aliyuncs.com/compatible-mode/v1
+	var url string
+	if strings.Contains(baseURL, "compatible-mode") {
+		// 如果 BaseURL 已经包含 compatible-mode，直接使用
+		url = strings.TrimSuffix(baseURL, "/") + "/chat/completions"
+	} else {
+		// 使用兼容接口
+		url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+	}
+
+	model := c.config.Model
+	if model == "" {
+		model = "qwen-plus"
+	}
+
+	log.Printf("[DashScopeClient] ========== LLM API Call (Function Calling) ==========")
+	log.Printf("[DashScopeClient] URL=%s", url)
+	log.Printf("[DashScopeClient] Model=%s", model)
+	log.Printf("[DashScopeClient] Messages Count=%d, Tools Count=%d", len(messages), len(tools))
+
+	// 构建请求体（OpenAI 兼容格式）
+	reqBody := map[string]interface{}{
+		"model":    model,
+		"messages": messages,
+		"tools":    tools,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.config.APIKey))
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 解析 OpenAI 兼容格式的响应
+	var openaiResp struct {
+		Choices []struct {
+			Message struct {
+				Role      string     `json:"role"`
+				Content   string     `json:"content"`
+				ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &openaiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if openaiResp.Error.Message != "" {
+		return nil, fmt.Errorf("API error: %s", openaiResp.Error.Message)
+	}
+
+	if len(openaiResp.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in response")
+	}
+
+	choice := openaiResp.Choices[0]
+	response := &ChatResponse{
+		Content:   choice.Message.Content,
+		ToolCalls: choice.Message.ToolCalls,
+	}
+
+	log.Printf("[DashScopeClient] ✓ LLM API Response received: ContentLength=%d, ToolCalls=%d", 
+		len(response.Content), len(response.ToolCalls))
+	if len(response.ToolCalls) > 0 {
+		for i, tc := range response.ToolCalls {
+			log.Printf("[DashScopeClient] ToolCall[%d]: ID=%s, Name=%s", i, tc.ID, tc.Function.Name)
+		}
+	}
+	log.Printf("[DashScopeClient] ========== End LLM API Call (Function Calling) ==========")
+
+	return response, nil
+}
+
 // TestConnection 测试连接
 func (c *DashScopeClient) TestConnection() error {
 	testMessages := []Message{
@@ -233,12 +380,17 @@ func NewOpenAIClient(config *types.LLMConfig) *OpenAIClient {
 type OpenAIRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
+	Tools    []Tool    `json:"tools,omitempty"` // 工具列表（Function Calling）
 }
 
 // OpenAIResponse OpenAI API 响应
 type OpenAIResponse struct {
 	Choices []struct {
-		Message Message `json:"message"`
+		Message struct {
+			Role      string     `json:"role"`
+			Content   string     `json:"content"`
+			ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+		} `json:"message"`
 	} `json:"choices"`
 	Error struct {
 		Message string `json:"message"`
@@ -289,7 +441,19 @@ func (c *OpenAIClient) Chat(messages []Message) (string, error) {
 		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var openaiResp OpenAIResponse
+	var openaiResp struct {
+		Choices []struct {
+			Message struct {
+				Role      string     `json:"role"`
+				Content   string     `json:"content"`
+				ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
 	if err := json.Unmarshal(body, &openaiResp); err != nil {
 		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
@@ -303,6 +467,87 @@ func (c *OpenAIClient) Chat(messages []Message) (string, error) {
 	}
 
 	return openaiResp.Choices[0].Message.Content, nil
+}
+
+// ChatWithTools 发送带工具调用的对话请求（Function Calling）
+func (c *OpenAIClient) ChatWithTools(messages []Message, tools []Tool) (*ChatResponse, error) {
+	url := fmt.Sprintf("%s/chat/completions", c.config.BaseURL)
+
+	model := c.config.Model
+	if model == "" {
+		model = "gpt-3.5-turbo"
+	}
+
+	log.Printf("[OpenAIClient] ========== LLM API Call (Function Calling) ==========")
+	log.Printf("[OpenAIClient] URL=%s", url)
+	log.Printf("[OpenAIClient] Model=%s", model)
+	log.Printf("[OpenAIClient] Messages Count=%d, Tools Count=%d", len(messages), len(tools))
+
+	reqBody := OpenAIRequest{
+		Model:    model,
+		Messages: messages,
+		Tools:    tools,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if c.config.APIKey != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.config.APIKey))
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var openaiResp OpenAIResponse
+	if err := json.Unmarshal(body, &openaiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if openaiResp.Error.Message != "" {
+		return nil, fmt.Errorf("API error: %s", openaiResp.Error.Message)
+	}
+
+	if len(openaiResp.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in response")
+	}
+
+	choice := openaiResp.Choices[0]
+	response := &ChatResponse{
+		Content:   choice.Message.Content,
+		ToolCalls: choice.Message.ToolCalls,
+	}
+
+	log.Printf("[OpenAIClient] ✓ LLM API Response received: ContentLength=%d, ToolCalls=%d", 
+		len(response.Content), len(response.ToolCalls))
+	if len(response.ToolCalls) > 0 {
+		for i, tc := range response.ToolCalls {
+			log.Printf("[OpenAIClient] ToolCall[%d]: ID=%s, Name=%s", i, tc.ID, tc.Function.Name)
+		}
+	}
+	log.Printf("[OpenAIClient] ========== End LLM API Call (Function Calling) ==========")
+
+	return response, nil
 }
 
 // TestConnection 测试连接
@@ -400,6 +645,14 @@ func (c *OllamaClient) Chat(messages []Message) (string, error) {
 	}
 
 	return ollamaResp.Message.Content, nil
+}
+
+// ChatWithTools 发送带工具调用的对话请求（Function Calling）
+// 注意：Ollama 可能不支持 Function Calling，此方法返回错误
+func (c *OllamaClient) ChatWithTools(messages []Message, tools []Tool) (*ChatResponse, error) {
+	// Ollama 目前不支持 Function Calling，回退到普通 Chat
+	// 或者返回错误，让调用方使用 Prompt-based 模式
+	return nil, fmt.Errorf("Ollama does not support Function Calling, please use Prompt-based mode")
 }
 
 // TestConnection 测试连接

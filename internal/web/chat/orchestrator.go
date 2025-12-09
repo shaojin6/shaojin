@@ -43,13 +43,12 @@ func NewOrchestrator(llmClient llm.Client, toolManager *mcpclient.ToolManager, s
 }
 
 // Chat 处理对话请求
-func (o *Orchestrator) Chat(ctx context.Context, sessionID string, userMessage string, agent *types.AgentConfig) (*types.ChatResponse, error) {
+func (o *Orchestrator) Chat(ctx context.Context, sessionID string, userMessage string, agent *types.AgentConfig, llmConfig *types.LLMConfig) (*types.ChatResponse, error) {
 	// 获取或创建会话
 	session, err := o.getOrCreateSession(ctx, sessionID, agent)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get or create session: %w", err)
 	}
-	agentID := session.AgentID
 
 	// 添加用户消息
 	session.Messages = append(session.Messages, llm.Message{
@@ -58,9 +57,6 @@ func (o *Orchestrator) Chat(ctx context.Context, sessionID string, userMessage s
 	})
 	session.UpdatedAt = time.Now()
 
-	var steps []types.ChatStep
-	var finalReply string
-
 	// 获取该 Agent 可用的工具列表
 	allowedTools := o.toolManager.ListToolsForAgent(agent)
 	if len(allowedTools) == 0 {
@@ -68,6 +64,30 @@ func (o *Orchestrator) Chat(ctx context.Context, sessionID string, userMessage s
 		return nil, fmt.Errorf("所选智能体未关联任何可用工具，请检查 MCP 服务配置和工具列表")
 	}
 	log.Printf("[Orchestrator] Agent %s has %d available tools: %v", agent.Name, len(allowedTools), getToolNames(allowedTools))
+
+	// 根据 Strategy 选择处理方式
+	strategy := agent.Strategy
+	if strategy == "" {
+		// 如果没有 Strategy，检测并确定（这种情况应该不会发生，因为 API 层已经处理了）
+		strategy = o.getOrDetermineStrategy(agent, llmConfig)
+	}
+
+	log.Printf("[Orchestrator] Using strategy: %s for agent %s", strategy, agent.Name)
+
+	// 根据策略选择处理方式
+	if strategy == "function_call" {
+		return o.chatWithFunctionCalling(ctx, sessionID, session, userMessage, agent, llmConfig, allowedTools)
+	} else {
+		return o.chatWithPromptBased(ctx, sessionID, session, userMessage, agent, allowedTools)
+	}
+}
+
+// chatWithPromptBased Prompt-based 模式处理（原有逻辑）
+func (o *Orchestrator) chatWithPromptBased(ctx context.Context, sessionID string, session *Session, userMessage string, agent *types.AgentConfig, allowedTools []mcp.Tool) (*types.ChatResponse, error) {
+	agentID := session.AgentID
+
+	var steps []types.ChatStep
+	var finalReply string
 	
 	// 检查是否有 scale 相关工具
 	hasScaleTool := false
@@ -1288,4 +1308,303 @@ func (o *Orchestrator) GetSessions(ctx context.Context, agentID string, limit, s
 	}
 
 	return metas, total, nil
+}
+
+// detectFunctionCallingSupport 检测模型是否支持 Function Calling
+func (o *Orchestrator) detectFunctionCallingSupport(llmConfig *types.LLMConfig) bool {
+	if llmConfig == nil {
+		return false
+	}
+	return llm.SupportsFunctionCalling(llmConfig.Provider, llmConfig.Model)
+}
+
+// getOrDetermineStrategy 获取或确定 Agent 的策略
+// 如果 Agent 已有 Strategy，直接返回
+// 如果没有，检测模型能力并返回（但不保存，由调用方保存）
+func (o *Orchestrator) getOrDetermineStrategy(agent *types.AgentConfig, llmConfig *types.LLMConfig) string {
+	// 如果已有 Strategy，直接使用
+	if agent.Strategy != "" {
+		log.Printf("[Orchestrator] Agent %s using stored strategy: %s", agent.Name, agent.Strategy)
+		return agent.Strategy
+	}
+
+	// 检测模型能力
+	supportsFC := o.detectFunctionCallingSupport(llmConfig)
+	if supportsFC {
+		log.Printf("[Orchestrator] Agent %s: Model %s supports Function Calling, will use function_call strategy", 
+			agent.Name, llmConfig.Model)
+		return "function_call"
+	} else {
+		log.Printf("[Orchestrator] Agent %s: Model %s does not support Function Calling, will use prompt_based strategy", 
+			agent.Name, llmConfig.Model)
+		return "prompt_based"
+	}
+}
+
+// convertToolsToLLMFormat 转换 MCP Tool 为 LLM Tool 格式（用于 Function Calling）
+func (o *Orchestrator) convertToolsToLLMFormat(tools []mcp.Tool) []llm.Tool {
+	llmTools := make([]llm.Tool, 0, len(tools))
+	for _, tool := range tools {
+		// 转换 InputSchema 为 JSON Schema 格式
+		parameters := make(map[string]interface{})
+		parameters["type"] = "object"
+		
+		properties := make(map[string]interface{})
+		required := make([]string, 0)
+		
+		if tool.InputSchema.Properties != nil {
+			for name, prop := range tool.InputSchema.Properties {
+				if propMap, ok := prop.(map[string]interface{}); ok {
+					propSchema := make(map[string]interface{})
+					
+					// 复制属性定义
+					if propType, ok := propMap["type"].(string); ok {
+						propSchema["type"] = propType
+					}
+					if desc, ok := propMap["description"].(string); ok {
+						propSchema["description"] = desc
+					}
+					if def, ok := propMap["default"]; ok {
+						propSchema["default"] = def
+					}
+					
+					properties[name] = propSchema
+				}
+			}
+		}
+		
+		parameters["properties"] = properties
+		
+		// 处理 required 字段
+		if tool.InputSchema.Required != nil {
+			required = tool.InputSchema.Required
+		}
+		if len(required) > 0 {
+			parameters["required"] = required
+		}
+		
+		llmTool := llm.Tool{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  parameters,
+			},
+		}
+		
+		llmTools = append(llmTools, llmTool)
+	}
+	
+	return llmTools
+}
+
+// chatWithFunctionCalling Function Calling 模式处理
+func (o *Orchestrator) chatWithFunctionCalling(ctx context.Context, sessionID string, session *Session, userMessage string, agent *types.AgentConfig, llmConfig *types.LLMConfig, allowedTools []mcp.Tool) (*types.ChatResponse, error) {
+	agentID := session.AgentID
+
+	var steps []types.ChatStep
+	var finalReply string
+
+	allowedToolNames := make(map[string]struct{})
+	for _, tool := range allowedTools {
+		allowedToolNames[strings.ToLower(tool.Name)] = struct{}{}
+	}
+
+	// 转换工具为 LLM 格式
+	llmTools := o.convertToolsToLLMFormat(allowedTools)
+	log.Printf("[Orchestrator] Converted %d tools to LLM format for Function Calling", len(llmTools))
+
+	// 准备消息列表（不包含系统提示词，工具信息通过 tools 参数传递）
+	messages := []llm.Message{}
+
+	// 限制历史消息数量，只保留最近3轮对话
+	const maxHistoryRounds = 3
+	const maxHistoryMessages = maxHistoryRounds * 2
+
+	var historicalMessages []llm.Message
+	if len(session.Messages) > maxHistoryMessages {
+		historicalMessages = session.Messages[len(session.Messages)-maxHistoryMessages:]
+		log.Printf("[Orchestrator] Limiting history: %d total messages, keeping last %d messages",
+			len(session.Messages), len(historicalMessages))
+	} else {
+		historicalMessages = session.Messages
+	}
+
+	messages = append(messages, historicalMessages...)
+
+	// 记录总开始时间
+	totalStartTime := time.Now()
+
+	// 循环处理，直到 LLM 返回最终答案或达到最大步数
+	for step := 0; step < o.maxSteps; step++ {
+		elapsed := time.Since(totalStartTime)
+		log.Printf("[Orchestrator] Step %d: Elapsed time: %v", step+1, elapsed)
+
+		if ctx.Err() != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				log.Printf("[Orchestrator] ERROR: Request timeout at step %d (elapsed: %v)", step+1, elapsed)
+				return nil, fmt.Errorf("请求超时：处理步骤 %d 时超过时间限制（已耗时 %v）", step+1, elapsed)
+			}
+			return nil, fmt.Errorf("请求被取消: %w", ctx.Err())
+		}
+
+		log.Printf("[Orchestrator] Step %d: Calling LLM with Function Calling (elapsed: %v)", step+1, elapsed)
+		log.Printf("[Orchestrator] ========== LLM Call #%d (Function Calling) ==========", step+1)
+
+		llmStartTime := time.Now()
+		llmResponse, err := o.llmClient.ChatWithTools(messages, llmTools)
+		llmDuration := time.Since(llmStartTime)
+
+		if err != nil {
+			log.Printf("[Orchestrator] ERROR: Function Calling failed after %v: %v", llmDuration, err)
+			// 如果 Function Calling 失败，回退到 Prompt-based
+			log.Printf("[Orchestrator] Falling back to Prompt-based mode")
+			return o.chatWithPromptBased(ctx, sessionID, session, userMessage, agent, allowedTools)
+		}
+
+		log.Printf("[Orchestrator] ✓ LLM response received in %v (ContentLength=%d, ToolCalls=%d)",
+			llmDuration, len(llmResponse.Content), len(llmResponse.ToolCalls))
+
+		// 记录 LLM 响应
+		steps = append(steps, types.ChatStep{
+			Type: "llm",
+			Text: llmResponse.Content,
+		})
+
+		// 检查是否有工具调用
+		if len(llmResponse.ToolCalls) > 0 {
+			// 有工具调用，执行工具
+			log.Printf("[Orchestrator] LLM requested %d tool calls", len(llmResponse.ToolCalls))
+
+			// 添加 assistant 消息（包含 tool_calls）
+			messages = append(messages, llm.Message{
+				Role:      "assistant",
+				Content:   llmResponse.Content,
+				ToolCalls: llmResponse.ToolCalls,
+			})
+
+			// 执行所有工具调用
+			toolResults := make([]llm.Message, 0, len(llmResponse.ToolCalls))
+			for _, toolCall := range llmResponse.ToolCalls {
+				toolName := toolCall.Function.Name
+				toolArgsStr := toolCall.Function.Arguments
+				toolCallID := toolCall.ID
+
+				// 解析工具参数
+				var toolArgs map[string]interface{}
+				if err := json.Unmarshal([]byte(toolArgsStr), &toolArgs); err != nil {
+					log.Printf("[Orchestrator] ERROR: Failed to parse tool arguments: %v", err)
+					toolResults = append(toolResults, llm.Message{
+						Role:       "tool",
+						Content:    fmt.Sprintf(`{"error": "Failed to parse tool arguments: %v"}`, err),
+						ToolCallID: toolCallID,
+					})
+					continue
+				}
+
+				// 检查工具是否可用
+				if _, ok := allowedToolNames[strings.ToLower(toolName)]; !ok {
+					log.Printf("[Orchestrator] Tool %s is not available for agent %s", toolName, agentID)
+					toolResults = append(toolResults, llm.Message{
+						Role:       "tool",
+						Content:    fmt.Sprintf(`{"error": "Tool %s is not available"}`, toolName),
+						ToolCallID: toolCallID,
+					})
+					continue
+				}
+
+				log.Printf("[Orchestrator] Calling tool: %s (ID: %s) with args: %+v", toolName, toolCallID, toolArgs)
+
+				steps = append(steps, types.ChatStep{
+					Type:      "tool",
+					Tool:      toolName,
+					Arguments: toolArgs,
+				})
+
+				// 调用工具
+				toolStartTime := time.Now()
+				toolResult, err := o.toolManager.CallTool(toolName, toolArgs)
+				toolDuration := time.Since(toolStartTime)
+
+				if err != nil {
+					log.Printf("[Orchestrator] ERROR: Tool %s failed after %v: %v", toolName, toolDuration, err)
+					toolResultText := fmt.Sprintf(`{"error": "Tool %s failed: %v"}`, toolName, err)
+					toolResults = append(toolResults, llm.Message{
+						Role:       "tool",
+						Content:    toolResultText,
+						ToolCallID: toolCallID,
+					})
+					steps[len(steps)-1].Result = map[string]interface{}{
+						"error": err.Error(),
+					}
+					continue
+				}
+
+				// 工具调用成功
+				var toolResultData interface{}
+				var toolResultText string
+				if toolResult != nil && len(toolResult.Content) > 0 {
+					toolResultText = toolResult.Content[0].Text
+					if err := json.Unmarshal([]byte(toolResultText), &toolResultData); err != nil {
+						toolResultData = toolResultText
+					}
+				}
+
+				log.Printf("[Orchestrator] Tool %s completed, result length: %d", toolName, len(toolResultText))
+				steps[len(steps)-1].Result = toolResultData
+
+				// 添加工具结果消息（Function Calling 中，tool 消息需要包含 tool_call_id）
+				toolResults = append(toolResults, llm.Message{
+					Role:       "tool",
+					Content:    toolResultText,
+					ToolCallID: toolCallID, // 关联对应的 tool call
+				})
+			}
+
+			// 将所有工具结果添加到消息列表
+			messages = append(messages, toolResults...)
+
+			// 继续下一轮
+			continue
+		} else {
+			// 没有工具调用，LLM 返回最终答案
+			finalReply = llmResponse.Content
+			if finalReply == "" {
+				finalReply = "抱歉，我无法处理您的请求。"
+			}
+
+			// 清理最终回答
+			finalReply = cleanFinalReply(finalReply, allowedTools)
+
+			// 更新会话
+			session.Messages = append(session.Messages, llm.Message{
+				Role:    "assistant",
+				Content: finalReply,
+			})
+			break
+		}
+	}
+
+	if finalReply == "" {
+		finalReply = "抱歉，处理时间过长，请简化您的问题。"
+	}
+
+	// 保存会话
+	sessionDoc := &store.SessionDoc{
+		ID:        session.ID,
+		AgentID:   session.AgentID,
+		Messages:  session.Messages,
+		CreatedAt: session.CreatedAt,
+		UpdatedAt: session.UpdatedAt,
+	}
+	if err := o.sessionStore.SaveSession(ctx, sessionDoc); err != nil {
+		log.Printf("Warning: Failed to save session: %v", err)
+	}
+
+	return &types.ChatResponse{
+		SessionID: session.ID,
+		AgentID:   agentID,
+		Reply:     finalReply,
+		Steps:     steps,
+	}, nil
 }
