@@ -200,7 +200,8 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 		if mysqlDB == "" {
 			mysqlDB = "mcp"
 		}
-		mysqlDSN = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&charset=utf8mb4&loc=Local",
+		// 添加超时参数：连接超时15秒，读取超时60秒，写入超时60秒（处理慢速网络或数据库响应）
+		mysqlDSN = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&charset=utf8mb4&loc=Local&timeout=15s&readTimeout=60s&writeTimeout=60s",
 			mysqlUser, mysqlPassword, mysqlHost, mysqlPort, mysqlDB)
 	}
 
@@ -1115,34 +1116,11 @@ func SetupRouter(mcpServer *mcp.Server, k8sClient *k8s.Client) *gin.Engine {
 			}
 			log.Printf("[Chat API] Orchestrator created successfully in %v", orchDuration)
 
-			// 检测并保存 Agent Strategy（如果未设置）
-			if agent.Strategy == "" {
-				// 检测模型能力
-				supportsFC := llm.SupportsFunctionCalling(llmConfig.Provider, llmConfig.Model)
-				if supportsFC {
-					agent.Strategy = "function_call"
-					log.Printf("[Chat API] Agent %s: Model %s supports Function Calling, setting strategy to function_call", 
-						agent.Name, llmConfig.Model)
-				} else {
-					agent.Strategy = "prompt_based"
-					log.Printf("[Chat API] Agent %s: Model %s does not support Function Calling, setting strategy to prompt_based", 
-						agent.Name, llmConfig.Model)
-				}
-				
-				// 保存 Strategy 到数据库
-				agent.UpdatedAt = time.Now().Unix()
-				cfgStore.SetAgent(*agent)
-				log.Printf("[Chat API] Saved Agent Strategy: %s for agent %s", agent.Strategy, agent.Name)
-			} else {
-				log.Printf("[Chat API] Agent %s using stored strategy: %s", agent.Name, agent.Strategy)
-			}
-
 			// 处理对话（添加超时上下文，10分钟超时，因为 qwen3-max 等大模型可能需要更长时间）
-			log.Printf("[Chat API] Processing chat request: agent=%s, session=%s, message=%s, strategy=%s", 
-				agent.Name, req.SessionID, req.Message, agent.Strategy)
+			log.Printf("[Chat API] Processing chat request: agent=%s, session=%s, message=%s", agent.Name, req.SessionID, req.Message)
 			ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
 			defer cancel()
-			response, err := orch.Chat(ctx, req.SessionID, req.Message, agent, llmConfig)
+			response, err := orch.Chat(ctx, req.SessionID, req.Message, agent)
 			if err != nil {
 				log.Printf("[Chat API] ERROR in chat: %v", err)
 				errMsg := err.Error()

@@ -1,7 +1,7 @@
 <template>
   <el-container class="app-container" v-if="authenticated">
     <el-header class="app-header">
-      <h1>🚀 MCP 智能体</h1>
+      <h1>🚀 ChatOps 智能体</h1>
       <el-button text @click="handleLogout" style="color: white; margin-left: auto;">
         <el-icon><SwitchButton /></el-icon>
         退出登录

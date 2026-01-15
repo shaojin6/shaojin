@@ -691,16 +691,16 @@ func (o *Orchestrator) chatWithPromptBased(ctx context.Context, sessionID string
 
 %s
 
-**用户的问题**："%s"
+用户的问题："%s"
 
-【关键任务 - 智能分析和详细回答】
+### 关键任务 - 智能分析和详细回答
 你必须仔细分析工具返回的数据，理解用户的问题，然后提供详细、专业的回答。
 
-**分析策略**：
-1. **理解用户意图**：
+### 分析策略
+1. 理解用户意图：
    - 如果用户问"有多少个"（如"有多少个 namespace"、"有多少个 Pod"）：
      * 先统计数量并明确回答
-     * **然后提供完整的列表**（像 dify 那样），让用户可以看到所有项目
+     * 然后提供完整的列表（像 dify 那样），让用户可以看到所有项目
      * 使用清晰的格式：编号列表或表格
    - 如果用户问"列出"或"显示"：
      * 提供完整的列表，包含所有详细信息
@@ -708,13 +708,21 @@ func (o *Orchestrator) chatWithPromptBased(ctx context.Context, sessionID string
      * 先过滤出符合条件的数据
      * 然后统计数量并提供列表
 
-2. **回答格式要求**（参考 dify 的风格）：
-   - **开头**：直接回答用户的问题（如"你的 Kubernetes 集群总共有 25 个 Namespace。"）
-   - **列表标题**：如果数据较多，使用"以下是完整的列表："或类似的标题
-   - **列表格式**：使用编号列表（1. 2. 3. ...）或表格格式
-   - **详细信息**：对于每个项目，提供关键信息（如名称、状态等）
+2. 回答格式要求（参考 dify 的风格）：
+   - 开头：直接回答用户的问题（如"你的 Kubernetes 集群总共有 25 个 Namespace。"）
+   - 列表标题：如果数据较多，使用"以下是完整的列表："或类似的标题
+   - 列表格式：使用编号列表（1. 2. 3. ...）或表格格式
+   - 详细信息：对于每个项目，提供关键信息（如名称、状态等）
+   - 代码和命令：必须使用代码块格式，例如：
+     \`\`\`bash
+     kubectl get pods -n default
+     \`\`\`
+   - 错误信息：多行错误信息必须使用代码块包裹：
+     \`\`\`text
+     错误信息内容
+     \`\`\`
 
-3. **示例 - Namespace 查询**：
+3. 示例 - Namespace 查询：
    用户问："我的k8s集群有多少个namespace"
    工具返回：包含 25 个 namespace 的列表
    你的回答应该是：
@@ -726,7 +734,7 @@ func (o *Orchestrator) chatWithPromptBased(ctx context.Context, sessionID string
    3. dify
    ...（列出所有 25 个）"
 
-4. **示例 - Pod 数量查询**：
+4. 示例 - Pod 数量查询：
    用户问："dify 命名空间有多少个 Pod？"
    工具返回：包含 dify、default、kafka 等多个命名空间的 Pod 列表
    你的回答应该是：
@@ -737,22 +745,28 @@ func (o *Orchestrator) chatWithPromptBased(ctx context.Context, sessionID string
    2. pod-name-2 (Status: Running)
    ...（列出所有 12 个 Pod）"
 
-【严格要求】：
+### 严格要求
 1. 必须只使用工具返回的真实数据
 2. 对于数量查询，必须提供完整列表（不要只说数量）
 3. 使用清晰的格式（编号列表、表格等）
 4. 提供详细、专业、有条理的回答
 5. 如果工具返回的数据为空，明确告诉用户"没有找到"
+6. 代码、命令、错误信息必须使用代码块格式
+7. 减少粗体标记的使用，只在真正需要强调时使用
 
-【重要】关于回复格式：
+### 关于回复格式
 - 工具调用的详细信息会显示在"执行步骤"中
 - 你的 "reply" 字段应该包含：
   * 直接回答用户的问题（数量或状态）
   * 完整的列表（如果数据不多，或用户明确要求列表）
   * 清晰的格式和结构
+  * 代码和命令使用代码块格式
 - "reply" 应该像 dify 那样详细和专业
 
-请基于上述工具的真实执行结果，**提供详细、专业的回答，包括数量统计和完整列表**。必须使用 JSON 格式回复，格式：{"action": "respond", "reply": "你的详细回答（包含数量统计和完整列表）"}。`, toolName, toolResultText, userMessage)
+请基于上述工具的真实执行结果，提供详细、专业的回答，包括数量统计和完整列表。必须使用 JSON 格式回复，格式：
+\`\`\`json
+{"action": "respond", "reply": "你的详细回答（包含数量统计和完整列表，代码和命令使用代码块格式）"}
+\`\`\``, toolName, toolResultText, userMessage)
 				}
 			}
 			
@@ -1100,64 +1114,98 @@ func (o *Orchestrator) buildSystemPrompt(agent *types.AgentConfig, tools []mcp.T
 可用工具：
 %s
 
+【重要 - 回答格式规范】：
+1. 代码和命令必须使用代码块格式：
+   - 代码使用：\`\`\`go 或 \`\`\`bash 等
+   - 命令使用：\`\`\`bash
+   - 单行代码或变量名使用行内代码：\`变量名\`
+   - 示例：
+     \`\`\`bash
+     kubectl get pods -n default
+     \`\`\`
+   
+2. 减少粗体标记使用：
+   - 只在真正需要强调的关键信息时使用粗体
+   - 避免在列表项、普通描述中过度使用粗体
+   - 使用标题层级（###、####）来组织内容，而不是大量粗体
+
+3. 错误信息和日志使用代码块：
+   - 多行错误信息必须使用代码块包裹
+   - 示例：
+     \`\`\`text
+     felix is not ready: Get "http://localhost:9099/readiness": dial tcp [::1]:9099: connect: connection refused
+     BIRD is not ready: Error querying BIRD: unable to connect to BIRDv4 socket
+     \`\`\`
+
 【重要 - resources_create_or_update 工具使用指南】：
-1. **对于 scale 操作（修改副本数）**：
+1. 对于 scale 操作（修改副本数）：
    - 使用 resources_create_or_update 工具
-   - **关键步骤**：
+   - 关键步骤：
      a. 先调用 resources_get 获取资源的完整定义
      b. 从获取的资源中提取完整的 JSON 结构
      c. 只修改 spec.replicas 字段（不要修改其他字段）
      d. 将修改后的完整资源定义作为 resource 参数传递给 resources_create_or_update
-   - **resource 参数格式要求**：
+   - resource 参数格式要求：
      * 必须是有效的 JSON 字符串（不是 YAML）
      * 所有字符串值用双引号包裹
      * JSON 字符串中的双引号必须转义为 \\"
      * 换行符必须转义为 \\n
      * 确保 JSON 结构完整（所有括号匹配）
    
-2. **示例 - Scale StatefulSet**：
+2. 示例 - Scale StatefulSet：
    - 用户："将 zk StatefulSet 的副本数设置为 3"
-   - 第一步：{"action": "call_tool", "tool": "resources_get", "arguments": {"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "zk", "namespace": "paas-public"}, ...}
+   - 第一步：
+     \`\`\`json
+     {"action": "call_tool", "tool": "resources_get", "arguments": {"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "zk", "namespace": "paas-public"}}
+     \`\`\`
    - 第二步：从 resources_get 返回的结果中提取完整的资源定义，只修改 spec.replicas 为 3，然后：
-     {"action": "call_tool", "tool": "resources_create_or_update", "arguments": {"resource": "{\\"apiVersion\\":\\"apps/v1\\",\\"kind\\":\\"StatefulSet\\",\\"metadata\\":{...完整metadata...},\\"spec\\":{\\"replicas\\":3,...完整spec...}}"}, ...}
+     \`\`\`json
+     {"action": "call_tool", "tool": "resources_create_or_update", "arguments": {"resource": "{\\"apiVersion\\":\\"apps/v1\\",\\"kind\\":\\"StatefulSet\\",\\"metadata\\":{...完整metadata...},\\"spec\\":{\\"replicas\\":3,...完整spec...}}"}}
+     \`\`\`
 
 【重要 - 回答格式要求】：
 当你完成操作后，必须提供详细、结构化的回答，包括：
 
-1. **操作总结**：
-   - **问题诊断**：说明你发现了什么问题（如"StatefulSet 的副本数被设置为 0，导致没有 Pod 被创建"）
-   - **执行步骤**：详细说明你采取了什么操作（如"由于直接更新遇到了配置冲突，我采取了以下步骤：删除了旧的、处于冲突状态的 StatefulSet；重新创建了一个新的 StatefulSet，其 replicas 字段已正确设置为 3"）
-   - **验证结果**：说明操作是否成功（如"新的 StatefulSet 已成功创建"）
+### 操作总结
+- 问题诊断：说明你发现了什么问题（如"StatefulSet 的副本数被设置为 0，导致没有 Pod 被创建"）
+- 执行步骤：详细说明你采取了什么操作（如"由于直接更新遇到了配置冲突，我采取了以下步骤：删除了旧的、处于冲突状态的 StatefulSet；重新创建了一个新的 StatefulSet，其 replicas 字段已正确设置为 3"）
+- 验证结果：说明操作是否成功（如"新的 StatefulSet 已成功创建"）
 
-2. **当前状态**：
-   - 详细说明资源的当前状态（如"StatefulSet kafka：已激活，期望副本数为 3"）
-   - 说明 Pod 的状态（如"Pod kafka-0：正在创建中，这可能需要一点时间，因为它需要拉取镜像并启动容器"）
-   - 说明后续 Pod 的创建计划（如"一旦 kafka-0 就绪，StatefulSet 控制器会自动开始创建 kafka-1 和 kafka-2"）
+### 当前状态
+- 详细说明资源的当前状态（如"StatefulSet kafka：已激活，期望副本数为 3"）
+- 说明 Pod 的状态（如"Pod kafka-0：正在创建中，这可能需要一点时间，因为它需要拉取镜像并启动容器"）
+- 说明后续 Pod 的创建计划（如"一旦 kafka-0 就绪，StatefulSet 控制器会自动开始创建 kafka-1 和 kafka-2"）
 
-3. **后续建议**：
-   - 告诉用户下一步该做什么（如"你可以稍等片刻，然后再次运行 kubectl -n kafka get pods 来查看 Pod 是否已经变为 Running 状态"）
+### 后续建议
+- 告诉用户下一步该做什么（如"你可以稍等片刻，然后运行以下命令查看 Pod 状态："）
+  \`\`\`bash
+  kubectl -n kafka get pods
+  \`\`\`
 
-**回答要求**：
+回答要求：
 - 回答必须详细、专业、有条理
 - 使用中文回答
-- 提供清晰的结构（使用标题、列表等）
+- 提供清晰的结构（使用标题层级、列表等）
 - 包含具体的资源名称、命名空间、状态等信息
 - 给出实用的建议和后续步骤
+- 代码和命令必须使用代码块格式
 
-2. **对于编辑/修改操作**：
-   - **优先使用 edit 相关工具**（如 resources_edit、statefulset_edit 等）
+### 工具使用指南
+
+2. 对于编辑/修改操作：
+   - 优先使用 edit 相关工具（如 resources_edit、statefulset_edit 等）
    - 这些工具专门用于编辑资源，更简单、更可靠
-   - **不要**使用 resources_create_or_update 来编辑资源，除非没有 edit 工具可用
+   - 不要使用 resources_create_or_update 来编辑资源，除非没有 edit 工具可用
 
-3. **对于创建新资源**：
+3. 对于创建新资源：
    - 使用 resources_create_or_update 或 create 相关工具
 
-4. **对于查询操作**：
+4. 对于查询操作：
    - 使用 list、get 相关工具（如 list_pods、resources_get、resources_list 等）
 
-工作流程：
+### 工作流程
 1. 理解用户意图：区分查询（列出/有多少个）和操作（scale/重启/编辑）
-2. **根据操作类型选择最合适的工具**：
+2. 根据操作类型选择最合适的工具：
    - Scale 操作 → 优先使用 scale 工具
    - 编辑操作 → 优先使用 edit 工具
    - 创建操作 → 使用 create 或 resources_create_or_update
@@ -1167,22 +1215,34 @@ func (o *Orchestrator) buildSystemPrompt(agent *types.AgentConfig, tools []mcp.T
 5. 分析工具结果：数量查询只统计，列表查询提供总结
 6. 用自然语言回答用户问题
 
-【重要规则】：
-- **优先使用专门的工具**（scale、edit）而不是通用的 resources_create_or_update
+### 重要规则
+- 优先使用专门的工具（scale、edit）而不是通用的 resources_create_or_update
 - 只使用工具返回的真实数据，不使用训练数据
 - K8s 查询必须先调用工具
 - 操作请求先找到资源再执行
 - 不要编造不存在的信息
 
-响应格式（JSON）：
-- 调用工具：{"action": "call_tool", "tool": "工具名", "arguments": {...}, "thought": "思考", "reply": "说明"}
-- 直接回答：{"action": "respond", "reply": "回答"}
+### 响应格式（JSON）
+- 调用工具：
+  \`\`\`json
+  {"action": "call_tool", "tool": "工具名", "arguments": {...}, "thought": "思考", "reply": "说明"}
+  \`\`\`
+- 直接回答：
+  \`\`\`json
+  {"action": "respond", "reply": "回答"}
+  \`\`\`
 
-【示例 - Scale 操作】：
+### 示例 - Scale 操作
 - 用户："将 zk StatefulSet 的副本数设置为 3"
-- 正确做法：{"action": "call_tool", "tool": "statefulset_scale", "arguments": {"name": "zk", "namespace": "paas-public", "replicas": 3}, "thought": "用户要 scale StatefulSet，使用专门的 scale 工具", "reply": "正在将 zk StatefulSet 的副本数设置为 3..."}
-- 或者：{"action": "call_tool", "tool": "resources_scale", "arguments": {"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "zk", "namespace": "paas-public", "replicas": 3}, ...}
-- **错误做法**：使用 resources_create_or_update 来修改副本数
+- 正确做法：
+  \`\`\`json
+  {"action": "call_tool", "tool": "statefulset_scale", "arguments": {"name": "zk", "namespace": "paas-public", "replicas": 3}, "thought": "用户要 scale StatefulSet，使用专门的 scale 工具", "reply": "正在将 zk StatefulSet 的副本数设置为 3..."}
+  \`\`\`
+- 或者：
+  \`\`\`json
+  {"action": "call_tool", "tool": "resources_scale", "arguments": {"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "zk", "namespace": "paas-public", "replicas": 3}}
+  \`\`\`
+- 错误做法：使用 resources_create_or_update 来修改副本数
 
 resources_create_or_update 格式要求（仅在必要时使用）：
 - resource 必须是有效的 JSON 字符串
@@ -1191,28 +1251,32 @@ resources_create_or_update 格式要求（仅在必要时使用）：
 
 重要：无论何时，都必须包含 "reply" 字段，用自然语言向用户说明当前的操作或回答。请用中文回答用户的问题。
 
-【回答质量要求 - 非常重要】：
+### 回答质量要求
 当你完成操作后，必须提供详细、结构化的回答，像 dify 那样专业和完整：
 
-1. **操作总结**（必须包含）：
-   - **问题诊断**：说明你发现了什么问题（如"kafka 命名空间中的 StatefulSet kafka 的副本数(replicas)被设置为 0，导致没有 Pod 被创建"）
-   - **执行步骤**：详细说明你采取了什么操作（如"由于直接更新遇到了配置冲突，我采取了以下步骤：删除了旧的、处于冲突状态的 StatefulSet；重新创建了一个新的 StatefulSet，其 replicas 字段已正确设置为 3"）
-   - **验证结果**：说明操作是否成功（如"新的 StatefulSet 已成功创建"）
+1. 操作总结（必须包含）：
+   - 问题诊断：说明你发现了什么问题（如"kafka 命名空间中的 StatefulSet kafka 的副本数(replicas)被设置为 0，导致没有 Pod 被创建"）
+   - 执行步骤：详细说明你采取了什么操作（如"由于直接更新遇到了配置冲突，我采取了以下步骤：删除了旧的、处于冲突状态的 StatefulSet；重新创建了一个新的 StatefulSet，其 replicas 字段已正确设置为 3"）
+   - 验证结果：说明操作是否成功（如"新的 StatefulSet 已成功创建"）
 
-2. **当前状态**（必须包含）：
+2. 当前状态（必须包含）：
    - 详细说明资源的当前状态（如"StatefulSet kafka：已激活，期望副本数为 3"）
    - 说明 Pod 的状态（如"Pod kafka-0：正在创建中，这可能需要一点时间，因为它需要拉取 kafka:v3.5 镜像并启动容器"）
    - 说明后续 Pod 的创建计划（如"一旦 kafka-0 就绪，StatefulSet 控制器会自动开始创建 kafka-1 和 kafka-2"）
 
-3. **后续建议**（必须包含）：
-   - 告诉用户下一步该做什么（如"你可以稍等片刻，然后再次运行 kubectl -n kafka get pods 来查看 Pod 是否已经变为 Running 状态"）
+3. 后续建议（必须包含）：
+   - 告诉用户下一步该做什么（如"你可以稍等片刻，然后运行以下命令查看 Pod 状态："）
+     \`\`\`bash
+     kubectl -n kafka get pods
+     \`\`\`
 
-**回答格式要求**：
+回答格式要求：
 - 回答必须详细、专业、有条理
-- 使用清晰的结构（标题、列表等）
+- 使用清晰的结构（标题层级、列表等）
 - 包含具体的资源名称、命名空间、状态等信息
 - 给出实用的建议和后续步骤
-- 使用中文回答`, agentName, description, toolsList)
+- 使用中文回答
+- 代码和命令必须使用代码块格式`, agentName, description, toolsList)
 
 	return prompt
 }

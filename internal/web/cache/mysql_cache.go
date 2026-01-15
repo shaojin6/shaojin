@@ -30,7 +30,8 @@ func NewMySQLCache(dsn string, fallback Cache) (*MySQLCache, error) {
 	db.SetMaxIdleConns(5)
 	db.SetMaxOpenConns(20)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 增加 Ping 超时时间到 10 秒
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("failed to ping MySQL: %w", err)
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS mcp_tools_cache (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) CHARSET=utf8mb4`
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 增加表创建超时时间到 30 秒
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if _, err := m.db.ExecContext(ctx, ddl); err != nil {

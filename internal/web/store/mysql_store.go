@@ -28,7 +28,8 @@ func NewMySQLStore(dsn string) (*MySQLStore, error) {
 	db.SetMaxIdleConns(5)
 	db.SetMaxOpenConns(20)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 增加 Ping 超时时间到 15 秒（处理慢速网络）
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("failed to ping MySQL: %w", err)
@@ -47,7 +48,8 @@ func NewMySQLStore(dsn string) (*MySQLStore, error) {
 
 // ensureTables 确保表存在
 func (m *MySQLStore) ensureTables() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 增加表创建超时时间到 60 秒（处理慢速网络或数据库响应）
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// 创建 agents 表
@@ -59,44 +61,17 @@ CREATE TABLE IF NOT EXISTS agents (
     mcp_server_id VARCHAR(255) NOT NULL,
     llm_id VARCHAR(255),
     system_prompt LONGTEXT,
-    strategy VARCHAR(50) DEFAULT NULL COMMENT 'Agent策略: function_call | prompt_based | NULL(自动检测)',
     enabled BOOLEAN DEFAULT TRUE,
     is_default BOOLEAN DEFAULT FALSE,
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL,
     INDEX idx_mcp_server_id (mcp_server_id),
     INDEX idx_enabled (enabled),
-    INDEX idx_is_default (is_default),
-    INDEX idx_strategy (strategy)
+    INDEX idx_is_default (is_default)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 
 	if _, err := m.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("failed to create agents table: %w", err)
-	}
-
-	// 检查并添加 strategy 字段（如果表已存在但字段不存在）
-	// 兼容现有数据库
-	checkColumnSQL := `
-		SELECT COUNT(*) 
-		FROM INFORMATION_SCHEMA.COLUMNS 
-		WHERE TABLE_SCHEMA = DATABASE() 
-		AND TABLE_NAME = 'agents' 
-		AND COLUMN_NAME = 'strategy'`
-	
-	var count int
-	if err := m.db.QueryRowContext(ctx, checkColumnSQL).Scan(&count); err == nil && count == 0 {
-		// 字段不存在，添加字段
-		alterSQL := `
-			ALTER TABLE agents 
-			ADD COLUMN strategy VARCHAR(50) DEFAULT NULL 
-			COMMENT 'Agent策略: function_call | prompt_based | NULL(自动检测)',
-			ADD INDEX idx_strategy (strategy)`
-		if _, err := m.db.ExecContext(ctx, alterSQL); err != nil {
-			log.Printf("[MySQLStore] WARNING: Failed to add strategy column: %v", err)
-			// 不返回错误，允许继续运行
-		} else {
-			log.Printf("[MySQLStore] Added strategy column to agents table")
-		}
 	}
 
 	log.Printf("[MySQLStore] Agents table ensured")
@@ -106,12 +81,12 @@ CREATE TABLE IF NOT EXISTS agents (
 
 // GetAllAgents 获取所有 Agent 配置
 func (m *MySQLStore) GetAllAgents(ctx context.Context) ([]types.AgentConfig, error) {
-	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	rows, err := m.db.QueryContext(queryCtx, `
 		SELECT id, name, description, mcp_server_id, llm_id, system_prompt, 
-		       strategy, enabled, is_default, created_at, updated_at
+		       enabled, is_default, created_at, updated_at
 		FROM agents
 		ORDER BY updated_at DESC
 	`)
@@ -123,7 +98,7 @@ func (m *MySQLStore) GetAllAgents(ctx context.Context) ([]types.AgentConfig, err
 	var agents []types.AgentConfig
 	for rows.Next() {
 		var agent types.AgentConfig
-		var description, llmID, systemPrompt, strategy sql.NullString
+		var description, llmID, systemPrompt sql.NullString
 
 		err := rows.Scan(
 			&agent.ID,
@@ -132,7 +107,6 @@ func (m *MySQLStore) GetAllAgents(ctx context.Context) ([]types.AgentConfig, err
 			&agent.MCPServerID,
 			&llmID,
 			&systemPrompt,
-			&strategy,
 			&agent.Enabled,
 			&agent.IsDefault,
 			&agent.CreatedAt,
@@ -151,9 +125,6 @@ func (m *MySQLStore) GetAllAgents(ctx context.Context) ([]types.AgentConfig, err
 		}
 		if systemPrompt.Valid {
 			agent.SystemPrompt = systemPrompt.String
-		}
-		if strategy.Valid {
-			agent.Strategy = strategy.String
 		}
 
 		agents = append(agents, agent)
@@ -174,10 +145,9 @@ func (m *MySQLStore) GetAgent(ctx context.Context, id string) (*types.AgentConfi
 	var agent types.AgentConfig
 	var description, llmID, systemPrompt sql.NullString
 
-	var strategy sql.NullString
 	err := m.db.QueryRowContext(queryCtx, `
 		SELECT id, name, description, mcp_server_id, llm_id, system_prompt,
-		       strategy, enabled, is_default, created_at, updated_at
+		       enabled, is_default, created_at, updated_at
 		FROM agents
 		WHERE id = ?
 	`, id).Scan(
@@ -187,7 +157,6 @@ func (m *MySQLStore) GetAgent(ctx context.Context, id string) (*types.AgentConfi
 		&agent.MCPServerID,
 		&llmID,
 		&systemPrompt,
-		&strategy,
 		&agent.Enabled,
 		&agent.IsDefault,
 		&agent.CreatedAt,
@@ -239,27 +208,26 @@ func (m *MySQLStore) SetAgent(ctx context.Context, agent types.AgentConfig) erro
 	_, err := m.db.ExecContext(queryCtx, `
 		INSERT INTO agents (
 			id, name, description, mcp_server_id, llm_id, system_prompt,
-			strategy, enabled, is_default, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			enabled, is_default, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			name = VALUES(name),
 			description = VALUES(description),
 			mcp_server_id = VALUES(mcp_server_id),
 			llm_id = VALUES(llm_id),
 			system_prompt = VALUES(system_prompt),
-			strategy = VALUES(strategy),
 			enabled = VALUES(enabled),
 			is_default = VALUES(is_default),
 			updated_at = VALUES(updated_at)
 	`, agent.ID, agent.Name, agent.Description, agent.MCPServerID, agent.LLMID,
-		agent.SystemPrompt, agent.Strategy, agent.Enabled, agent.IsDefault, agent.CreatedAt, agent.UpdatedAt)
+		agent.SystemPrompt, agent.Enabled, agent.IsDefault, agent.CreatedAt, agent.UpdatedAt)
 
 	if err != nil {
 		return fmt.Errorf("failed to save agent: %w", err)
 	}
 
-	log.Printf("[MySQLStore] Agent saved: ID=%s, Name=%s, Strategy=%s, SystemPrompt length=%d",
-		agent.ID, agent.Name, agent.Strategy, len(agent.SystemPrompt))
+	log.Printf("[MySQLStore] Agent saved: ID=%s, Name=%s, SystemPrompt length=%d",
+		agent.ID, agent.Name, len(agent.SystemPrompt))
 
 	return nil
 }
@@ -285,10 +253,9 @@ func (m *MySQLStore) GetDefaultAgent(ctx context.Context) (*types.AgentConfig, e
 	var agent types.AgentConfig
 	var description, llmID, systemPrompt sql.NullString
 
-	var strategy sql.NullString
 	err := m.db.QueryRowContext(queryCtx, `
 		SELECT id, name, description, mcp_server_id, llm_id, system_prompt,
-		       strategy, enabled, is_default, created_at, updated_at
+		       enabled, is_default, created_at, updated_at
 		FROM agents
 		WHERE is_default = TRUE AND enabled = TRUE
 		LIMIT 1
@@ -299,7 +266,6 @@ func (m *MySQLStore) GetDefaultAgent(ctx context.Context) (*types.AgentConfig, e
 		&agent.MCPServerID,
 		&llmID,
 		&systemPrompt,
-		&strategy,
 		&agent.Enabled,
 		&agent.IsDefault,
 		&agent.CreatedAt,
@@ -321,9 +287,6 @@ func (m *MySQLStore) GetDefaultAgent(ctx context.Context) (*types.AgentConfig, e
 	}
 	if systemPrompt.Valid {
 		agent.SystemPrompt = systemPrompt.String
-	}
-	if strategy.Valid {
-		agent.Strategy = strategy.String
 	}
 
 	return &agent, nil
